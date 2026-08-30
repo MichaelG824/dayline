@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "day-planner"
+version = "0.1.0"
+description = "A personal planning agent that turns a task list into a time-blocked daily plan."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Gee" }]
+
+# The planning core and adapter interfaces are deliberately dependency-free
+# (stdlib only). Streamlit is a real dependency for the interactive dashboard
+# (item 6); it is a thin presentation layer over the core.
+dependencies = [
+    "streamlit>=1.30",
+]
+
+[project.optional-dependencies]
+# Deferred integrations - NOT wired yet (no credentials exist). Listed here so
+# the eventual real adapters have a documented home. The tree stays importable
+# and testable without installing these.
+notion = [
+    # Backs the future MCP-server-fronted TaskSource. The MCP server itself is
+    # the captain's hand-coded piece (see mcp_server/README.md).
+    "notion-client>=2.0",
+]
+google = [
+    # Backs the future direct Google Calendar CalendarClient.
+    "google-api-python-client>=2.0",
+    "google-auth-oauthlib>=1.0",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.9",
+]
+
+[project.scripts]
+day-planner = "day_planner.scheduler.run:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/day_planner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["day_planner"]
+strict = true
+# Streamlit (and its transitive numpy/pandas stubs) are third-party; don't type
+# them and don't follow into them - the UI is a thin, untyped presentation layer.
+[[tool.mypy.overrides]]
+module = ["streamlit", "streamlit.*", "numpy", "numpy.*", "pandas", "pandas.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
