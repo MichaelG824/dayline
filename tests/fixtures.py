@@ -8,7 +8,15 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 
-from day_planner.models import Category, Priority, Task, TimeSlot, Window
+from day_planner.models import (
+    Category,
+    Priority,
+    Recurrence,
+    Task,
+    TimeSlot,
+    Weekday,
+    Window,
+)
 
 DAY = date(2026, 8, 31)
 
@@ -32,6 +40,8 @@ def task(
     duration: int = 60,
     fixed_time: datetime | None = None,
     preferred_window: Window | None = None,
+    recurs: Recurrence | None = None,
+    recur_day: Weekday | None = None,
 ) -> Task:
     """Build a Task with sensible defaults; override only what the test cares
     about."""
@@ -43,4 +53,6 @@ def task(
         id=id,
         fixed_time=fixed_time,
         preferred_window=preferred_window,
+        recurs=recurs,
+        recur_day=recur_day,
     )

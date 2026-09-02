@@ -1,8 +1,8 @@
-# `mcp_server/` - RESERVED (captain's build)
+# `mcp_server/` - Notion MCP server
 
-**This directory is intentionally empty of code.**
-It is reserved for the captain's own hand-coded **Notion MCP server** - the deliberate "learn MCP properly" piece of the epic (Subtask 2).
-Do not scaffold server code here and do not add an MCP SDK dependency to the project; this README is a **contract only**.
+A standalone **Notion MCP server** - the "learn MCP properly" piece of the epic (Subtask 2).
+It is implemented here as its own project; see [`RUNNING.md`](RUNNING.md) for install and run steps.
+Its MCP SDK dependency is intentionally scoped to this sub-project's own `pyproject.toml` and is **never** added to the day-planner package - the planner depends only on the `TaskSource` Protocol.
 
 ## What this server will be
 
