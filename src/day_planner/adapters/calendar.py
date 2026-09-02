@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Protocol, runtime_checkable
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 from day_planner.models import TimeSlot
+
+# OAuth scope: full calendar access (read busy time + create/delete our blocks).
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -95,22 +100,150 @@ class InMemoryCalendar:
         self._events.pop(event_id, None)
 
 
+def _to_rfc3339(dt: datetime, tz: str) -> str:
+    """Attach the calendar timezone to a naive local datetime -> RFC3339 string."""
+    return dt.replace(tzinfo=ZoneInfo(tz)).isoformat()
+
+
+def _parse_google_dt(node: dict[str, Any], tz: str) -> datetime | None:
+    """Parse a Google event ``start``/``end`` node into a naive local datetime.
+
+    Returns ``None`` for all-day events (a ``date`` node with no ``dateTime``),
+    which the planner ignores as busy time.
+    """
+    value = node.get("dateTime")
+    if not value:
+        return None
+    aware = datetime.fromisoformat(value)
+    return aware.astimezone(ZoneInfo(tz)).replace(tzinfo=None)
+
+
 class GoogleCalendarClient:
-    """DEFERRED: real direct Google Calendar caller (the epic's baseline pattern).
+    """Real Google Calendar :class:`CalendarClient` - a direct REST caller (no MCP).
 
-    This will call the Google Calendar REST API directly (no MCP layer) to read
-    busy/free and create timed blocks, satisfying :class:`CalendarClient`
-    unchanged. It is intentionally *not* implemented in this increment: no OAuth
-    credentials are available yet.
+    Reads busy time and creates/reconciles the planner's timed blocks. Satisfies
+    the :class:`CalendarClient` Protocol, so it drops into the scheduler unchanged
+    in place of :class:`InMemoryCalendar`.
 
-    Required when wired: a Google Cloud OAuth client (``credentials.json``) and a
-    stored user token (``token.json``); install extras with
-    ``pip install '.[google]'``.
+    Needs the ``google`` extra: ``pip install '.[google]'``. On first use it runs
+    the Google OAuth consent flow in a browser and stores ``token.json``; after
+    that it refreshes silently. See ``GOOGLE_SETUP.md``.
+
+    Args:
+        calendar_id: which calendar to plan into (default your primary calendar).
+        credentials_path / token_path: OAuth client secret and stored token
+            (default ``credentials.json`` / ``token.json`` at the repo root).
+        timezone: IANA tz for created blocks; defaults to the calendar's own.
     """
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError(
-            "GoogleCalendarClient is deferred: it needs Google OAuth credentials "
-            "(credentials.json / token.json) and the '.[google]' extra. Use "
-            "InMemoryCalendar until those are provisioned. See README setup checklist."
+    def __init__(
+        self,
+        *,
+        calendar_id: str = "primary",
+        credentials_path: str | Path | None = None,
+        token_path: str | Path | None = None,
+        timezone: str | None = None,
+    ) -> None:
+        try:
+            from googleapiclient.discovery import build
+        except ModuleNotFoundError as exc:  # pragma: no cover - env-dependent
+            raise RuntimeError(
+                "GoogleCalendarClient needs the Google client libraries. Install "
+                "the extra: pip install '.[google]'."
+            ) from exc
+        self._calendar_id = calendar_id
+        creds = self._load_credentials(credentials_path, token_path)
+        self._service = build("calendar", "v3", credentials=creds)
+        self._tz = timezone or self._detect_timezone()
+
+    # --- CalendarClient Protocol --------------------------------------------
+    def list_events(self, day: date) -> list[CalendarEvent]:
+        start = datetime.combine(day, time.min)
+        end = start + timedelta(days=1)
+        items = (
+            self._service.events()
+            .list(
+                calendarId=self._calendar_id,
+                timeMin=_to_rfc3339(start, self._tz),
+                timeMax=_to_rfc3339(end, self._tz),
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+            .get("items", [])
         )
+        events: list[CalendarEvent] = []
+        for item in items:
+            s = _parse_google_dt(item.get("start", {}), self._tz)
+            e = _parse_google_dt(item.get("end", {}), self._tz)
+            if s is None or e is None:
+                continue  # skip all-day / malformed events
+            events.append(CalendarEvent(item["id"], item.get("summary", ""), s, e))
+        return events
+
+    def list_busy(self, day: date) -> list[TimeSlot]:
+        return [ev.slot for ev in self.list_events(day)]
+
+    def create_block(self, title: str, start: datetime, end: datetime) -> str:
+        body = {
+            "summary": title,
+            "start": {"dateTime": _to_rfc3339(start, self._tz), "timeZone": self._tz},
+            "end": {"dateTime": _to_rfc3339(end, self._tz), "timeZone": self._tz},
+        }
+        event = (
+            self._service.events()
+            .insert(calendarId=self._calendar_id, body=body)
+            .execute()
+        )
+        return event["id"]
+
+    def delete_event(self, event_id: str) -> None:
+        from googleapiclient.errors import HttpError
+
+        try:
+            self._service.events().delete(
+                calendarId=self._calendar_id, eventId=event_id
+            ).execute()
+        except HttpError as exc:
+            if exc.resp.status not in (404, 410):  # already gone is fine
+                raise
+
+    # --- OAuth / setup -------------------------------------------------------
+    def _load_credentials(
+        self, credentials_path: str | Path | None, token_path: str | Path | None
+    ) -> Any:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        repo_root = Path(__file__).resolve().parents[3]
+        cred_file = (
+            Path(credentials_path) if credentials_path else repo_root / "credentials.json"
+        )
+        token_file = Path(token_path) if token_path else repo_root / "token.json"
+
+        creds = None
+        if token_file.exists():
+            creds = Credentials.from_authorized_user_file(str(token_file), GOOGLE_SCOPES)
+        if creds and creds.valid:
+            return creds
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not cred_file.exists():
+                raise RuntimeError(
+                    f"Missing Google OAuth client secret at {cred_file}. Download it "
+                    "from the Google Cloud Console (OAuth client, 'Desktop app') and "
+                    "save it there. See GOOGLE_SETUP.md."
+                )
+            flow = InstalledAppFlow.from_client_secrets_file(str(cred_file), GOOGLE_SCOPES)
+            creds = flow.run_local_server(port=0)
+        token_file.write_text(creds.to_json())
+        return creds
+
+    def _detect_timezone(self) -> str:
+        try:
+            cal = self._service.calendars().get(calendarId=self._calendar_id).execute()
+            return cal.get("timeZone", "UTC")
+        except Exception:
+            return "UTC"

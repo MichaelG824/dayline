@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "notion-mcp-server"
+version = "0.1.0"
+description = "Standalone Notion MCP server backing the day-planner TaskSource (list_tasks / get_task / update_task)."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Gee" }]
+
+# Deliberately its OWN project so the MCP SDK never leaks into the day-planner
+# tree. The day-planner client depends on the TaskSource Protocol, not on this.
+dependencies = [
+    "mcp>=2",             # MCP SDK (2.x high-level MCPServer API)
+    "httpx>=0.27",        # async HTTP client for the Notion REST API
+    "python-dotenv>=1.0", # auto-load NOTION_TOKEN / NOTION_DATABASE_ID from .env
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+notion-mcp-server = "notion_mcp.server:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/notion_mcp"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py311"

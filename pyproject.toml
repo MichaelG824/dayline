@@ -23,9 +23,10 @@ dependencies = [
 # the eventual real adapters have a documented home. The tree stays importable
 # and testable without installing these.
 notion = [
-    # Backs the future MCP-server-fronted TaskSource. The MCP server itself is
-    # the captain's hand-coded piece (see mcp_server/README.md).
-    "notion-client>=2.0",
+    # NotionTaskSource is an MCP *client* of the hand-coded server (see
+    # mcp_server/), so it needs the MCP SDK - not a direct Notion client. Notion
+    # access (and notion-client, if any) lives inside the server, not here.
+    "mcp>=2",
 ]
 google = [
     # Backs the future direct Google Calendar CalendarClient.

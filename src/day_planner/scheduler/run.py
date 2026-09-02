@@ -19,7 +19,7 @@ from datetime import date, datetime, time
 
 from day_planner.adapters.calendar import CalendarClient
 from day_planner.adapters.task_source import TaskSource
-from day_planner.models import Plan, Status, TimeSlot
+from day_planner.models import Plan, Recurrence, Status, Task, TimeSlot, Weekday
 from day_planner.planner.core import build_plan
 
 # Stable marker prefixed onto every agent-created calendar block title. This is
@@ -56,7 +56,7 @@ def run_daily_plan(
 
     # 2. Read the world after reconciliation.
     busy = calendar.list_busy(day)
-    open_tasks = [t for t in task_source.list_tasks() if t.status != Status.DONE]
+    open_tasks = _eligible_tasks(day, task_source)
 
     # 3. Pure planning.
     free = _compute_free(day, busy, day_start_hour, day_end_hour)
@@ -70,6 +70,52 @@ def run_daily_plan(
         )
 
     return plan
+
+
+def is_due(recurs: Recurrence, recur_day: Weekday | None, day: date) -> bool:
+    """Whether a recurring task should be planned on ``day``.
+
+    A pure function of the date, so eligibility is deterministic and a same-day
+    re-run is stable:
+
+    * ``DAILY``    - every day.
+    * ``WEEKDAYS`` - Monday through Friday.
+    * ``WEEKLY``   - only on ``recur_day`` (no day set means never due).
+    """
+    if recurs == Recurrence.DAILY:
+        return True
+    if recurs == Recurrence.WEEKDAYS:
+        return day.weekday() < 5  # Mon=0 .. Fri=4
+    if recurs == Recurrence.WEEKLY:
+        return recur_day is not None and day.weekday() == recur_day.index
+    return False
+
+
+def _eligible_tasks(day: date, task_source: TaskSource) -> list[Task]:
+    """Today's candidate tasks to feed the planner.
+
+    One-shot tasks are eligible while not ``DONE`` (unchanged behavior). A
+    recurring task is a candidate only on its due day; if it is due today but was
+    completed on a prior day, it is reset to ``BACKLOG`` so it re-enters today's
+    plan and then flows through the normal flexible placement.
+
+    Assumes at most one planning run per day (the morning trigger): a recurring
+    task completed *and* re-planned within the same day would be reset again.
+    """
+    eligible: list[Task] = []
+    for t in task_source.list_tasks():
+        if t.recurs is None:
+            if t.status != Status.DONE:
+                eligible.append(t)
+            continue
+        # Recurring: a candidate only on its due day.
+        if not is_due(t.recurs, t.recur_day, day):
+            continue
+        if t.status == Status.DONE:
+            # Completed on a prior due day; bring it back for today.
+            t = task_source.update_task(t.id, status=Status.BACKLOG)
+        eligible.append(t)
+    return eligible
 
 
 def _compute_free(

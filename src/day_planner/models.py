@@ -74,6 +74,42 @@ WINDOW_HOURS: dict[Window, tuple[int, int]] = {
 }
 
 
+class Recurrence(StrEnum):
+    """How a task repeats. ``None`` on a task means one-shot (the default)."""
+
+    DAILY = "Daily"
+    WEEKDAYS = "Weekdays"
+    WEEKLY = "Weekly"
+
+
+class Weekday(StrEnum):
+    """A day of the week. ``index`` matches :meth:`datetime.date.weekday`
+    (Monday is 0), and pins a ``WEEKLY`` task to one day."""
+
+    MON = "Mon"
+    TUE = "Tue"
+    WED = "Wed"
+    THU = "Thu"
+    FRI = "Fri"
+    SAT = "Sat"
+    SUN = "Sun"
+
+    @property
+    def index(self) -> int:
+        return _WEEKDAY_ORDER.index(self)
+
+
+_WEEKDAY_ORDER = (
+    Weekday.MON,
+    Weekday.TUE,
+    Weekday.WED,
+    Weekday.THU,
+    Weekday.FRI,
+    Weekday.SAT,
+    Weekday.SUN,
+)
+
+
 @dataclass(slots=True)
 class Task:
     """A unit of work to be scheduled."""
@@ -87,6 +123,8 @@ class Task:
     fixed_time: datetime | None = None
     preferred_window: Window | None = None
     due_date: datetime | None = None
+    recurs: Recurrence | None = None
+    recur_day: Weekday | None = None
 
     def __post_init__(self) -> None:
         if self.est_duration_min <= 0:
