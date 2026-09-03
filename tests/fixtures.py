@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 
-from day_planner.models import (
+from dayline.models import (
     Category,
     Priority,
     Recurrence,
@@ -42,6 +42,8 @@ def task(
     preferred_window: Window | None = None,
     recurs: Recurrence | None = None,
     recur_day: Weekday | None = None,
+    planned_date: date | None = None,
+    interview_id: str | None = None,
 ) -> Task:
     """Build a Task with sensible defaults; override only what the test cares
     about."""
@@ -55,4 +57,6 @@ def task(
         preferred_window=preferred_window,
         recurs=recurs,
         recur_day=recur_day,
+        planned_date=planned_date,
+        interview_id=interview_id,
     )

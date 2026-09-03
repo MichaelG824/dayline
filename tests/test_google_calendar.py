@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from day_planner.adapters.calendar import _parse_google_dt, _to_rfc3339
+from dayline.adapters.calendar import _parse_google_dt, _to_rfc3339
 
 TZ = "America/New_York"  # -04:00 in September (EDT)
 

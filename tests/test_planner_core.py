@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from day_planner.models import Category, Priority, ScheduledBlock, TimeSlot, Window
-from day_planner.planner.core import build_plan
+from dayline.models import Category, Priority, ScheduledBlock, TimeSlot, Window
+from dayline.planner.core import build_plan
 from tests.fixtures import DAY, at, slot, task
 
 
@@ -62,7 +62,7 @@ def test_no_collisions_with_busy_or_between_blocks() -> None:
     free = [slot(8, 10), slot(12, 14)]
     tasks = [
         task("p1", category=Category.SYSTEM_DESIGN, priority=Priority.P0, duration=60),
-        task("p2", category=Category.AI_CODING, priority=Priority.P1, duration=60),
+        task("p2", category=Category.AI_CODING_REACT_PYTHON, priority=Priority.P1, duration=60),
         task("p3", category=Category.BEHAVIORAL, priority=Priority.P1, duration=60),
     ]
     plan = build_plan(tasks, free, DAY)
@@ -76,7 +76,7 @@ def test_no_collisions_with_busy_or_between_blocks() -> None:
 # --- Rule 2 tie-break: prep beats errand on equal priority ---------------- #
 def test_prep_outranks_errand_on_priority_tie_when_capacity_scarce() -> None:
     # One 60-min slot, two equal-priority 60-min tasks. Prep must win the slot.
-    prep = task("prep", category=Category.AI_CODING, priority=Priority.P2, duration=60)
+    prep = task("prep", category=Category.AI_CODING_REACT_PYTHON, priority=Priority.P2, duration=60)
     errand = task("errand", category=Category.ERRAND, priority=Priority.P2, duration=60)
 
     plan = build_plan([errand, prep], [slot(8, 9)], DAY)
@@ -152,7 +152,7 @@ def test_build_plan_is_deterministic_regardless_of_input_order() -> None:
         task("behav", category=Category.BEHAVIORAL, priority=Priority.P1, duration=60,
              preferred_window=Window.MORNING),
         task("errand", category=Category.ERRAND, priority=Priority.P2, duration=30),
-        task("aicode", category=Category.AI_CODING, priority=Priority.P1, duration=60),
+        task("aicode", category=Category.AI_CODING_REACT_PYTHON, priority=Priority.P1, duration=60),
     ]
     free = [slot(8, 18)]
 

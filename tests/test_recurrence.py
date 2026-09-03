@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from day_planner.adapters.calendar import InMemoryCalendar
-from day_planner.adapters.task_source import InMemoryTaskSource
-from day_planner.models import Recurrence, Status, Weekday
-from day_planner.scheduler.run import is_due, run_daily_plan
+from dayline.adapters.calendar import InMemoryCalendar
+from dayline.adapters.task_source import InMemoryTaskSource
+from dayline.models import Recurrence, Status, Weekday
+from dayline.scheduler.run import is_due, run_daily_plan
 from tests.fixtures import task
 
 MON = date(2026, 8, 31)

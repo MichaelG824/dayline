@@ -27,7 +27,7 @@ grant access, and it writes **`token.json`** next to `credentials.json`. After
 that it refreshes silently - no more prompts.
 
 ```python
-from day_planner.adapters.calendar import GoogleCalendarClient
+from dayline.adapters.calendar import GoogleCalendarClient
 cal = GoogleCalendarClient()          # opens the consent flow on first use
 ```
 
@@ -36,19 +36,22 @@ Both `credentials.json` and `token.json` are secrets - keep them out of git
 
 ## 4. Use it in the pipeline
 
-Swap it in for `InMemoryCalendar`:
+Swap it in for `InMemoryCalendar` (`api/main.py`'s `_calendar()` currently
+constructs `InMemoryCalendar` per day - replace that with a single
+module-level `GoogleCalendarClient()` once you've completed the setup above):
 
 ```python
-from day_planner.adapters.task_source import NotionTaskSource
-from day_planner.adapters.calendar import GoogleCalendarClient
-from day_planner.scheduler.run import run_daily_plan
+from dayline.adapters.task_source import SupabaseTaskSource
+from dayline.adapters.calendar import GoogleCalendarClient
+from dayline.adapters.supabase_client import get_supabase_client
+from dayline.scheduler.run import run_daily_plan
 from datetime import date
 
-run_daily_plan(date.today(), NotionTaskSource(), GoogleCalendarClient())
+run_daily_plan(date.today(), SupabaseTaskSource(get_supabase_client()), GoogleCalendarClient())
 ```
 
 The planner reads your busy time, plans around it, and writes marker-tagged
-blocks (`[day-planner] ...`) it can safely re-create on the next run.
+blocks (`[dayline] ...`) it can safely re-create on the next run.
 
 ## Options
 
