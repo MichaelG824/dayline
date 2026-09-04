@@ -33,13 +33,14 @@ load_dotenv()
 from dayline.adapters.application_source import (  # noqa: E402
     SupabaseApplicationSource,
 )
-from dayline.adapters.calendar import InMemoryCalendar  # noqa: E402
+from dayline.adapters.calendar import GoogleCalendarClient, InMemoryCalendar  # noqa: E402
 from dayline.adapters.category_weights import (  # noqa: E402
     PREP_CATEGORIES,
     get_category_ranks,
     get_category_weights,
     set_category_ranks,
 )
+from dayline.adapters.interview_calendar_sync import sync_interview_event  # noqa: E402
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
 from dayline.adapters.supabase_client import get_supabase_client  # noqa: E402
 from dayline.adapters.task_source import SupabaseTaskSource  # noqa: E402
@@ -73,14 +74,20 @@ app.add_middleware(
 
 # Single persistent stores, constructed once - replaces the old per-day
 # reseeded in-memory fakes. Supabase is the source of truth for
-# tasks/applications/interviews now; only the calendar stays in-memory and
-# day-keyed (Google Calendar wiring is a separate, deferred step).
+# tasks/applications/interviews now; the day-scheduling calendar stays
+# in-memory and day-keyed (writing planned task blocks to a real calendar is
+# a separate, still-deferred step - see AGENTS.md). A real Google Calendar
+# is wired in for a narrower purpose: pushing interviews to it (see
+# /api/calendar/* below and adapters/interview_calendar_sync.py).
 _client = get_supabase_client()
 _task_source = SupabaseTaskSource(_client)
 _application_source = SupabaseApplicationSource(_client)
 _interview_source = SupabaseInterviewSource(_client)
 _calendars: dict[date, InMemoryCalendar] = {}
 _anthropic_client = anthropic.Anthropic()
+# Starts disconnected, unlike the singletons above - requires an explicit
+# POST /api/calendar/connect (runs the OAuth flow) before interviews sync.
+_google_calendar: GoogleCalendarClient | None = None
 
 
 def _calendar(day: date) -> InMemoryCalendar:
@@ -199,6 +206,7 @@ def _interview_json(interview: Interview) -> dict[str, Any]:
         "category": interview.category.value,
         "scheduledAt": interview.scheduled_at.isoformat(),
         "notes": interview.notes,
+        "syncedToCalendar": interview.google_event_id is not None,
     }
 
 
@@ -373,12 +381,62 @@ def create_interview(body: InterviewCreateRequest) -> dict[str, Any]:
         notes=body.notes,
     )
     created = _interview_source.create_interview(interview)
+    if _google_calendar is not None:
+        # Best-effort: a calendar hiccup must never fail interview creation -
+        # Supabase remains the source of truth.
+        with contextlib.suppress(Exception):
+            application = None
+            with contextlib.suppress(KeyError):
+                application = _application_source.get_application(created.application_id)
+            event_id = sync_interview_event(_google_calendar, created, application)
+            created = _interview_source.update_interview(created.id, google_event_id=event_id)
     return _interview_json(created)
 
 
 @app.delete("/api/interviews/{interview_id}", status_code=204)
 def delete_interview(interview_id: str) -> None:
+    if _google_calendar is not None:
+        with contextlib.suppress(KeyError):
+            interview = _interview_source.get_interview(interview_id)
+            if interview.google_event_id:
+                with contextlib.suppress(Exception):
+                    _google_calendar.delete_event(interview.google_event_id)
     _interview_source.delete_interview(interview_id)
+
+
+@app.get("/api/calendar/status")
+def calendar_status() -> dict[str, bool]:
+    return {"connected": _google_calendar is not None}
+
+
+@app.post("/api/calendar/connect")
+def connect_calendar() -> dict[str, bool]:
+    """Run the (one-time) Google OAuth flow and hold the connected client for
+    the life of this process. Needs `credentials.json` at the repo root -
+    see GOOGLE_SETUP.md."""
+    global _google_calendar
+    try:
+        _google_calendar = GoogleCalendarClient()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"connected": True}
+
+
+@app.post("/api/calendar/sync-interviews")
+def sync_interviews() -> dict[str, int]:
+    """Push every currently-upcoming interview to the connected calendar -
+    backfills interviews created before the calendar was connected."""
+    if _google_calendar is None:
+        raise HTTPException(status_code=409, detail="Google Calendar is not connected yet.")
+    synced = 0
+    for interview in _interview_source.list_upcoming():
+        application = None
+        with contextlib.suppress(KeyError):
+            application = _application_source.get_application(interview.application_id)
+        event_id = sync_interview_event(_google_calendar, interview, application)
+        _interview_source.update_interview(interview.id, google_event_id=event_id)
+        synced += 1
+    return {"synced": synced}
 
 
 @app.get("/api/applications")

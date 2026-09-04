@@ -1,7 +1,9 @@
 # Google Calendar setup
 
-`GoogleCalendarClient` writes the planner's time blocks to your real Google
-Calendar. It needs a one-time OAuth setup (this is the step only you can do).
+`GoogleCalendarClient` talks to your real Google Calendar - today it powers
+interview sync (section 4); writing the planner's own time blocks there is a
+separate, still-deferred step (section 5). Either way it needs the same
+one-time OAuth setup below (this is the part only you can do).
 
 ## 1. Install the extra
 
@@ -34,11 +36,27 @@ cal = GoogleCalendarClient()          # opens the consent flow on first use
 Both `credentials.json` and `token.json` are secrets - keep them out of git
 (they should be gitignored).
 
-## 4. Use it in the pipeline
+## 4. Interview sync (live today)
 
-Swap it in for `InMemoryCalendar` (`api/main.py`'s `_calendar()` currently
-constructs `InMemoryCalendar` per day - replace that with a single
-module-level `GoogleCalendarClient()` once you've completed the setup above):
+Once steps 1-3 above are done, open the app's Calendar tab and click
+**Connect Google Calendar** - it runs the OAuth consent flow (steps 3 above
+happen in a browser window the backend opens) and writes `token.json`. From
+then on every interview you create pushes to your real Google Calendar
+automatically, and deleting an interview removes its calendar event too. Use
+**Sync interviews now** to backfill anything created before you connected.
+
+This is a one-way, interview-only sync
+(`adapters/interview_calendar_sync.py`, wired into `api/main.py`'s
+`/api/calendar/*` endpoints) - it does not touch the day-scheduling calendar
+below.
+
+## 5. Scheduler wiring (still deferred)
+
+The day-scheduling calendar (`api/main.py`'s `_calendar()`) still constructs
+`InMemoryCalendar` per day - writing the *planner's* time-blocked plan to your
+real calendar is a separate, bigger change (every `POST /api/plan` call would
+become network-dependent) and remains manual/deferred. Swap it in yourself if
+you want it:
 
 ```python
 from dayline.adapters.task_source import SupabaseTaskSource

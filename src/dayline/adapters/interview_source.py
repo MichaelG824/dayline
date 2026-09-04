@@ -16,7 +16,7 @@ from dayline.models import Interview, InterviewCategory
 
 @runtime_checkable
 class InterviewSource(Protocol):
-    """Read/create surface over interview rounds."""
+    """Read/create/update surface over interview rounds."""
 
     def list_upcoming(self, *, after: datetime | None = None) -> list[Interview]:
         """Return interviews at or after ``after`` (default: now), soonest first."""
@@ -36,6 +36,10 @@ class InterviewSource(Protocol):
 
     def delete_interview(self, interview_id: str) -> None:
         """Delete an interview by id. No-op if it is already gone."""
+        ...
+
+    def update_interview(self, interview_id: str, *, google_event_id: str | None) -> Interview:
+        """Update the linked Google Calendar event id (``None`` clears it)."""
         ...
 
 
@@ -71,6 +75,11 @@ class InMemoryInterviewSource:
     def delete_interview(self, interview_id: str) -> None:
         self._interviews.pop(interview_id, None)
 
+    def update_interview(self, interview_id: str, *, google_event_id: str | None) -> Interview:
+        interview = self._interviews[interview_id]
+        interview.google_event_id = google_event_id
+        return copy.deepcopy(interview)
+
 
 def _parse_dt(value: Any) -> datetime:
     return datetime.fromisoformat(value)
@@ -83,6 +92,7 @@ def _interview_to_row(interview: Interview) -> dict[str, Any]:
         "category": interview.category.value,
         "scheduled_at": interview.scheduled_at.isoformat(),
         "notes": interview.notes,
+        "google_event_id": interview.google_event_id,
     }
 
 
@@ -93,6 +103,7 @@ def _row_to_interview(row: dict[str, Any]) -> Interview:
         category=InterviewCategory(row["category"]),
         scheduled_at=_parse_dt(row["scheduled_at"]),
         notes=row.get("notes"),
+        google_event_id=row.get("google_event_id"),
     )
 
 
@@ -144,3 +155,14 @@ class SupabaseInterviewSource:
 
     def delete_interview(self, interview_id: str) -> None:
         self._client.table("interviews").delete().eq("id", interview_id).execute()
+
+    def update_interview(self, interview_id: str, *, google_event_id: str | None) -> Interview:
+        resp = (
+            self._client.table("interviews")
+            .update({"google_event_id": google_event_id})
+            .eq("id", interview_id)
+            .execute()
+        )
+        if not resp.data:
+            raise KeyError(interview_id)
+        return _row_to_interview(resp.data[0])

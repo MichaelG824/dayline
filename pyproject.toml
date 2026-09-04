@@ -26,11 +26,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Deferred integration - NOT wired yet (no credentials exist). Listed here so
-# the eventual real adapter has a documented home. The tree stays importable
-# and testable without installing this.
+# Backs GoogleCalendarClient (adapters/calendar.py), live today for pushing
+# interviews to Google Calendar (see GOOGLE_SETUP.md, api/main.py's
+# /api/calendar/* endpoints). Needs credentials.json - the tree stays
+# importable and testable without installing this or completing that setup.
 google = [
-    # Backs the future direct Google Calendar CalendarClient.
     "google-api-python-client>=2.0",
     "google-auth-oauthlib>=1.0",
 ]
@@ -64,3 +64,9 @@ python_version = "3.11"
 mypy_path = "src"
 packages = ["dayline"]
 strict = true
+
+# The google extra ships no type stubs/py.typed marker; GoogleCalendarClient
+# is the only caller and already narrows its surface to plain str/dict types.
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*", "google_auth_oauthlib.*", "google.*"]
+ignore_missing_imports = true

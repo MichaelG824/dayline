@@ -195,7 +195,7 @@ class GoogleCalendarClient:
             .insert(calendarId=self._calendar_id, body=body)
             .execute()
         )
-        return event["id"]
+        return str(event["id"])
 
     def delete_event(self, event_id: str) -> None:
         from googleapiclient.errors import HttpError
@@ -224,7 +224,12 @@ class GoogleCalendarClient:
 
         creds = None
         if token_file.exists():
-            creds = Credentials.from_authorized_user_file(str(token_file), GOOGLE_SCOPES)
+            # google-auth ships no py.typed marker, so this call is reported
+            # as untyped even under our ignore_missing_imports override above
+            # (which only covers unresolved imports, not untyped calls).
+            creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call]
+                str(token_file), GOOGLE_SCOPES
+            )
         if creds and creds.valid:
             return creds
         if creds and creds.expired and creds.refresh_token:
@@ -244,6 +249,6 @@ class GoogleCalendarClient:
     def _detect_timezone(self) -> str:
         try:
             cal = self._service.calendars().get(calendarId=self._calendar_id).execute()
-            return cal.get("timeZone", "UTC")
+            return str(cal.get("timeZone", "UTC"))
         except Exception:
             return "UTC"

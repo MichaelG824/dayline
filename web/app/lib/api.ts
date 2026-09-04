@@ -56,6 +56,7 @@ export interface Interview {
   category: string;
   scheduledAt: string;
   notes: string | null;
+  syncedToCalendar: boolean;
 }
 
 export interface Proposal {
@@ -199,6 +200,36 @@ export async function createInterview(input: CreateInterviewInput): Promise<Inte
 export async function deleteInterview(interviewId: string): Promise<void> {
   const res = await fetch(`${API}/api/interviews/${interviewId}`, { method: 'DELETE' });
   await checkOk(res, 'Failed to delete interview');
+}
+
+export interface CalendarStatus {
+  connected: boolean;
+}
+
+export async function getCalendarStatus(): Promise<CalendarStatus> {
+  const res = await fetch(`${API}/api/calendar/status`, { cache: 'no-store' });
+  return (await checkOk(res, 'Failed to load calendar status')).json();
+}
+
+// Runs the (one-time) Google OAuth flow server-side - on failure, surfaces
+// the backend's exact setup-gap message (e.g. missing credentials.json)
+// rather than a generic error, since that message tells the user what to do.
+export async function connectCalendar(): Promise<CalendarStatus> {
+  const res = await fetch(`${API}/api/calendar/connect`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to connect Google Calendar');
+  }
+  return res.json();
+}
+
+export async function syncInterviewsToCalendar(): Promise<{ synced: number }> {
+  const res = await fetch(`${API}/api/calendar/sync-interviews`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to sync interviews');
+  }
+  return res.json();
 }
 
 export async function getApplications(): Promise<Application[]> {

@@ -102,7 +102,7 @@ def is_due(recurs: Recurrence, recur_day: Weekday | None, day: date) -> bool:
     if recurs == Recurrence.WEEKDAYS:
         return day.weekday() < 5  # Mon=0 .. Fri=4
     if recurs == Recurrence.WEEKLY:
-        return recur_day is not None and day.weekday() == recur_day.index
+        return recur_day is not None and day.weekday() == recur_day.weekday_index
     return False
 
 

@@ -116,7 +116,7 @@ class Recurrence(StrEnum):
 
 
 class Weekday(StrEnum):
-    """A day of the week. ``index`` matches :meth:`datetime.date.weekday`
+    """A day of the week. ``weekday_index`` matches :meth:`datetime.date.weekday`
     (Monday is 0), and pins a ``WEEKLY`` task to one day."""
 
     MON = "Mon"
@@ -128,7 +128,7 @@ class Weekday(StrEnum):
     SUN = "Sun"
 
     @property
-    def index(self) -> int:
+    def weekday_index(self) -> int:
         return _WEEKDAY_ORDER.index(self)
 
 
@@ -209,6 +209,9 @@ class Interview:
     scheduled_at: datetime
     id: str
     notes: str | None = None
+    # Id of the synced Google Calendar event, if any (see
+    # adapters/interview_calendar_sync.py). None means never synced.
+    google_event_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

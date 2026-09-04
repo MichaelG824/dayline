@@ -41,9 +41,16 @@ function InterviewCard({ interview, onDelete }: { interview: Interview; onDelete
           &times;
         </button>
       </div>
-      <span className={`self-start text-xs font-mono px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 ${meta.text}`}>
-        &bull; {meta.short}
-      </span>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`text-xs font-mono px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 ${meta.text}`}>
+          &bull; {meta.short}
+        </span>
+        {interview.syncedToCalendar && (
+          <span className="text-xs font-mono px-2 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+            &#10003; Synced
+          </span>
+        )}
+      </div>
       {interview.notes && <p className="text-sm text-zinc-600 dark:text-zinc-400">{interview.notes}</p>}
       <span className="self-start text-sm font-mono px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300">
         {days <= 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} away`}

@@ -130,7 +130,7 @@ export function AppShell({
               onChanged={refreshInterviews}
             />
           )}
-          {tab === 'calendar' && <CalendarTab />}
+          {tab === 'calendar' && <CalendarTab onSynced={refreshInterviews} />}
           {tab === 'chat' && (
             <ChatTab
               day={day}
