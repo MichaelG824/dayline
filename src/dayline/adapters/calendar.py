@@ -60,6 +60,15 @@ class CalendarClient(Protocol):
         """Create a timed event; return its event id."""
         ...
 
+    def update_event(self, event_id: str, title: str, start: datetime, end: datetime) -> None:
+        """Update an existing event's title/time in place, leaving every
+        other field (attendees, location, description, video links, ...)
+        untouched. Never delete-and-recreate here: the event may be one the
+        app only *linked to* (an imported interview) rather than created, and
+        deleting someone else's real calendar event to replace it with a bare
+        placeholder is destructive and irreversible."""
+        ...
+
     def delete_event(self, event_id: str) -> None:
         """Delete an event by id. No-op if it is already gone."""
         ...
@@ -111,13 +120,26 @@ class InMemoryCalendar:
         self._events[event_id] = CalendarEvent(event_id, title, start, end)
         return event_id
 
+    def update_event(self, event_id: str, title: str, start: datetime, end: datetime) -> None:
+        if event_id in self._events:
+            self._events[event_id] = CalendarEvent(event_id, title, start, end)
+
     def delete_event(self, event_id: str) -> None:
         self._events.pop(event_id, None)
 
 
 def _to_rfc3339(dt: datetime, tz: str) -> str:
-    """Attach the calendar timezone to a naive local datetime -> RFC3339 string."""
-    return dt.replace(tzinfo=ZoneInfo(tz)).isoformat()
+    """Naive local datetime -> attach ``tz`` and return an RFC3339 string.
+
+    An already-aware ``dt`` (e.g. read back from a Postgres ``timestamptz``
+    column, which always round-trips as aware) is *converted* into ``tz``
+    instead - relabeling it with ``.replace()`` would silently corrupt the
+    wall-clock time by the zone's UTC offset (caught via a real calendar
+    event landing 5 hours off).
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=ZoneInfo(tz)).isoformat()
+    return dt.astimezone(ZoneInfo(tz)).isoformat()
 
 
 def _parse_google_dt(node: dict[str, Any], tz: str) -> datetime | None:
@@ -236,6 +258,22 @@ class GoogleCalendarClient:
             self._service.events().insert(calendarId=self._calendar_id, body=body)
         )
         return str(event["id"])
+
+    def update_event(self, event_id: str, title: str, start: datetime, end: datetime) -> None:
+        # events().patch (not update/insert) only touches the fields given,
+        # leaving attendees/location/description/etc. on the existing event
+        # untouched - required for imported interviews, whose event the app
+        # never created and must not otherwise disturb.
+        body = {
+            "summary": title,
+            "start": {"dateTime": _to_rfc3339(start, self._tz), "timeZone": self._tz},
+            "end": {"dateTime": _to_rfc3339(end, self._tz), "timeZone": self._tz},
+        }
+        self._execute(
+            self._service.events().patch(
+                calendarId=self._calendar_id, eventId=event_id, body=body
+            )
+        )
 
     def delete_event(self, event_id: str) -> None:
         from googleapiclient.errors import HttpError

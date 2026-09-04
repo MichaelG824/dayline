@@ -62,18 +62,34 @@ def test_sync_creates_event_when_none_exists() -> None:
     )
 
 
-def test_resync_deletes_old_event_and_creates_new() -> None:
+def test_resync_updates_existing_event_in_place() -> None:
+    # Never delete-and-recreate: the linked event may be one the app merely
+    # linked to (an imported interview owns its own pre-existing event), not
+    # one it created, so destroying and replacing it would be data loss.
     calendar = InMemoryCalendar()
     interview = _interview()
 
     first_id = sync_interview_event(calendar, interview, APPLICATION)
     interview.google_event_id = first_id
+    interview.category = InterviewCategory.BEHAVIORAL
     second_id = sync_interview_event(calendar, interview, APPLICATION)
 
-    assert second_id != first_id
+    assert second_id == first_id
     events = calendar.list_events(interview.scheduled_at.date())
     assert len(events) == 1
-    assert events[0].event_id == second_id
+    assert events[0].event_id == first_id
+    assert events[0].title == "Interview: Acme (Behavioral)"
+
+
+def test_sync_never_deletes_the_linked_event() -> None:
+    calendar = InMemoryCalendar()
+    interview = _interview()
+    event_id = sync_interview_event(calendar, interview, APPLICATION)
+    interview.google_event_id = event_id
+
+    sync_interview_event(calendar, interview, APPLICATION)
+
+    assert calendar.list_events(interview.scheduled_at.date())
 
 
 def test_guess_company_strips_interview_with_prefix() -> None:

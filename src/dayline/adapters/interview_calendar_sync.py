@@ -46,14 +46,18 @@ def guess_company_from_title(title: str) -> str:
 def sync_interview_event(
     calendar: CalendarClient, interview: Interview, application: Application | None
 ) -> str:
-    """Create a fresh calendar event for ``interview``; return its event id.
+    """Create or update the calendar event for ``interview``; return its id.
 
     If the interview already has a linked event (``interview.google_event_id``),
-    delete it first - interviews have no edit endpoint today, so "update in
-    place" isn't a case that exists yet; delete-then-recreate is simplest.
+    update it in place rather than deleting and recreating - the linked event
+    may not be one the app created (an imported interview links to the
+    user's own pre-existing event), so deleting it would destroy real
+    calendar data (attendees, location, video links, ...) that can never be
+    recovered. Only a brand-new interview gets a brand-new event.
     """
-    if interview.google_event_id:
-        calendar.delete_event(interview.google_event_id)
     title = interview_event_title(interview, application)
     end = interview.scheduled_at + timedelta(minutes=INTERVIEW_EVENT_DURATION_MIN)
+    if interview.google_event_id:
+        calendar.update_event(interview.google_event_id, title, interview.scheduled_at, end)
+        return interview.google_event_id
     return calendar.create_block(title, interview.scheduled_at, end)
