@@ -1,13 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Application,
   Interview,
   PREP_CATEGORIES,
+  connectCalendar,
   createApplication,
   createInterview,
   deleteInterview,
+  getCalendarStatus,
+  syncInterviewsToCalendar,
 } from '../lib/api';
 import { categoryMeta } from '../lib/categories';
 import { daysUntil, formatDateTimeLabel } from '../lib/dates';
@@ -55,6 +58,89 @@ function InterviewCard({ interview, onDelete }: { interview: Interview; onDelete
       <span className="self-start text-sm font-mono px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300">
         {days <= 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} away`}
       </span>
+    </div>
+  );
+}
+
+function CalendarConnect({ onSynced }: { onSynced: () => void }) {
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [syncedCount, setSyncedCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    getCalendarStatus()
+      .then((s) => setConnected(s.connected))
+      .catch(() => setConnected(false));
+  }, []);
+
+  async function handleConnect() {
+    setBusy(true);
+    setError(null);
+    try {
+      await connectCalendar();
+      setConnected(true);
+      const { synced } = await syncInterviewsToCalendar();
+      setSyncedCount(synced);
+      onSynced();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to connect Google Calendar');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSyncNow() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { synced } = await syncInterviewsToCalendar();
+      setSyncedCount(synced);
+      onSynced();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync interviews');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (connected === null) return null;
+
+  if (connected) {
+    return (
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4 flex items-center gap-3 flex-wrap">
+        <span className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">
+          Google Calendar connected
+        </span>
+        <button
+          onClick={handleSyncNow}
+          disabled={busy}
+          className="ml-auto px-3 py-1.5 text-xs rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-zinc-700 disabled:opacity-40"
+        >
+          {busy ? 'Syncing...' : 'Sync interviews now'}
+        </button>
+        {syncedCount !== null && (
+          <span className="text-xs text-zinc-500 basis-full">Synced {syncedCount} interview(s).</span>
+        )}
+        {error && <p className="text-rose-600 dark:text-rose-400 text-sm basis-full">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4 flex flex-col gap-2">
+      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        Connect Google Calendar to push your interviews there automatically. Needs a
+        one-time setup - see <span className="font-mono">GOOGLE_SETUP.md</span> in the repo.
+      </p>
+      <button
+        onClick={handleConnect}
+        disabled={busy}
+        className="self-start px-4 py-2 text-sm rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-40"
+      >
+        {busy ? 'Waiting for sign-in...' : 'Connect Google Calendar'}
+      </button>
+      {error && <p className="text-rose-600 dark:text-rose-400 text-sm">{error}</p>}
     </div>
   );
 }
@@ -113,6 +199,8 @@ export function InterviewsTab({ interviews, applications, onChanged }: Props) {
 
   return (
     <div className="flex flex-col gap-6">
+      <CalendarConnect onSynced={onChanged} />
+
       <div className="flex justify-end">
         <button
           onClick={() => setShowForm(true)}

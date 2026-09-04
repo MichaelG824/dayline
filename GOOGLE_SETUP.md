@@ -39,7 +39,7 @@ Both `credentials.json` and `token.json` are secrets - keep them out of git
 
 ## 4. Interview and task sync (live today)
 
-Once steps 1-3 above are done, open the app's Calendar tab and click
+Once steps 1-3 above are done, open the app's Interviews tab and click
 **Connect Google Calendar** - it runs the OAuth consent flow (steps 3 above
 happen in a browser window the backend opens) and writes `token.json`. From
 then on:

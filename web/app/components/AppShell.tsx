@@ -16,10 +16,9 @@ import { computeDayTasks } from '../lib/dayTasks';
 import { Sidebar } from './Sidebar';
 import { TasksTab } from './TasksTab';
 import { InterviewsTab } from './InterviewsTab';
-import { CalendarTab } from './CalendarTab';
 import { ChatTab } from './ChatTab';
 
-export type Tab = 'tasks' | 'interviews' | 'calendar' | 'chat';
+export type Tab = 'tasks' | 'interviews' | 'chat';
 
 interface Props {
   initialDay: string;
@@ -90,12 +89,12 @@ export function AppShell({
         onNavigateDay={(delta) => refreshDay(addDays(day, delta))}
         onCategoryWeightsChanged={(next) => setCategoryWeights(next)}
         onAppliedToBacklog={() => refreshDay(day)}
-        onGoToCalendar={() => setTab('calendar')}
+        onGoToCalendar={() => setTab('interviews')}
       />
       <main className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 px-6 py-3">
           <nav className="flex gap-1">
-            {(['tasks', 'interviews', 'calendar', 'chat'] as Tab[]).map((t) => (
+            {(['tasks', 'interviews', 'chat'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -130,7 +129,6 @@ export function AppShell({
               onChanged={refreshInterviews}
             />
           )}
-          {tab === 'calendar' && <CalendarTab onSynced={refreshInterviews} />}
           {tab === 'chat' && (
             <ChatTab
               day={day}
