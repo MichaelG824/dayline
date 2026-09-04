@@ -44,18 +44,24 @@ class TaskSource(Protocol):
         self,
         task_id: str,
         *,
+        name: str | None = None,
         status: Status | None = None,
         scheduled_time: datetime | None = None,
         est_duration_min: int | None = None,
         priority: Priority | None = None,
         planned_date: date | None = None,
         category: Category | None = None,
+        fixed_time: datetime | None = None,
     ) -> Task:
         """Update any of the given fields on a task; return the new state."""
         ...
 
     def create_task(self, task: Task) -> Task:
         """Persist a new task; return it as stored."""
+        ...
+
+    def delete_task(self, task_id: str) -> None:
+        """Delete a task by id. No-op if it is already gone."""
         ...
 
 
@@ -98,14 +104,18 @@ class InMemoryTaskSource:
         self,
         task_id: str,
         *,
+        name: str | None = None,
         status: Status | None = None,
         scheduled_time: datetime | None = None,
         est_duration_min: int | None = None,
         priority: Priority | None = None,
         planned_date: date | None = None,
         category: Category | None = None,
+        fixed_time: datetime | None = None,
     ) -> Task:
         task = self._tasks[task_id]  # KeyError if unknown, matching the contract
+        if name is not None:
+            task.name = name
         if status is not None:
             task.status = status
         if scheduled_time is not None:
@@ -118,11 +128,17 @@ class InMemoryTaskSource:
             task.planned_date = planned_date
         if category is not None:
             task.category = category
+        if fixed_time is not None:
+            task.fixed_time = fixed_time
         return copy.deepcopy(task)
 
     def create_task(self, task: Task) -> Task:
         self._tasks[task.id] = copy.deepcopy(task)
         return copy.deepcopy(task)
+
+    def delete_task(self, task_id: str) -> None:
+        self._tasks.pop(task_id, None)
+        self._scheduled_time.pop(task_id, None)
 
     # Convenience for tests/UI - not part of the Protocol.
     def scheduled_time_of(self, task_id: str) -> datetime | None:
@@ -266,14 +282,18 @@ class SupabaseTaskSource:
         self,
         task_id: str,
         *,
+        name: str | None = None,
         status: Status | None = None,
         scheduled_time: datetime | None = None,
         est_duration_min: int | None = None,
         priority: Priority | None = None,
         planned_date: date | None = None,
         category: Category | None = None,
+        fixed_time: datetime | None = None,
     ) -> Task:
         updates: dict[str, Any] = {}
+        if name is not None:
+            updates["name"] = name
         if status is not None:
             updates["status"] = status.value
         if scheduled_time is not None:
@@ -292,6 +312,8 @@ class SupabaseTaskSource:
             updates["planned_date"] = planned_date.isoformat()
         if category is not None:
             updates["category"] = category.value
+        if fixed_time is not None:
+            updates["fixed_time"] = fixed_time.isoformat()
         resp = (
             self._client.table("tasks").update(updates).eq("id", task_id).execute()
         )
@@ -302,6 +324,9 @@ class SupabaseTaskSource:
     def create_task(self, task: Task) -> Task:
         resp = self._client.table("tasks").insert(_task_to_row(task)).execute()
         return _dict_to_task(resp.data[0])
+
+    def delete_task(self, task_id: str) -> None:
+        self._client.table("tasks").delete().eq("id", task_id).execute()
 
     # Convenience for the API layer - not part of the Protocol, matching
     # InMemoryTaskSource's `scheduled_time_of`.

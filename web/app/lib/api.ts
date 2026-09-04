@@ -143,11 +143,13 @@ export async function createTask(input: CreateTaskInput): Promise<TaskRow> {
 }
 
 export interface UpdateTaskInput {
+  name?: string;
   estDurationMin?: number;
   priority?: string;
   plannedDate?: string | null;
   category?: string;
   status?: string;
+  fixedTime?: string | null;
 }
 
 export async function updateTask(taskId: string, input: UpdateTaskInput): Promise<TaskRow> {
@@ -157,6 +159,11 @@ export async function updateTask(taskId: string, input: UpdateTaskInput): Promis
     body: JSON.stringify(input),
   });
   return (await checkOk(res, 'Failed to update task')).json();
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  const res = await fetch(`${API}/api/tasks/${taskId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete task');
 }
 
 export async function getCategoryWeights(): Promise<CategoryWeight[]> {

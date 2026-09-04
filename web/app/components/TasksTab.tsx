@@ -1,11 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { CategoryWeight, updateTask } from '../lib/api';
+import { CategoryWeight, deleteTask, updateTask } from '../lib/api';
 import { categoryMeta, formatDuration, isMiscCategory, rankCategories } from '../lib/categories';
 import { formatClockTime } from '../lib/dates';
 import { DayTask } from '../lib/dayTasks';
-import { AddTaskModal } from './AddTaskModal';
+import { TaskFormModal } from './TaskFormModal';
 
 interface Props {
   day: string;
@@ -15,14 +15,24 @@ interface Props {
   onTasksChanged: () => void;
 }
 
-function TaskRow({ task, onToggle }: { task: DayTask; onToggle: () => void }) {
+function TaskRow({
+  task,
+  onToggle,
+  onEdit,
+  onDelete,
+}: {
+  task: DayTask;
+  onToggle: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
-    <label className="flex items-center gap-3 px-4 py-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 cursor-pointer">
+    <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40">
       <input
         type="checkbox"
         checked={task.status === 'Done'}
         onChange={onToggle}
-        className="w-4 h-4 accent-indigo-500"
+        className="w-4 h-4 accent-indigo-500 cursor-pointer"
       />
       <span className={`flex-1 ${task.status === 'Done' ? 'line-through text-zinc-400 dark:text-zinc-500' : 'text-zinc-900 dark:text-zinc-100'}`}>
         {task.name}
@@ -31,15 +41,37 @@ function TaskRow({ task, onToggle }: { task: DayTask; onToggle: () => void }) {
         {task.effectiveTime ? `${formatClockTime(task.effectiveTime)} · ` : ''}
         {formatDuration(task.estDurationMin)}
       </span>
-    </label>
+      <button
+        onClick={onEdit}
+        title="Edit"
+        className="text-zinc-400 dark:text-zinc-600 hover:text-zinc-700 dark:hover:text-zinc-300 px-1"
+      >
+        &#9998;
+      </button>
+      <button
+        onClick={onDelete}
+        title="Delete"
+        className="text-zinc-400 dark:text-zinc-600 hover:text-rose-500 dark:hover:text-rose-400 px-1"
+      >
+        &times;
+      </button>
+    </div>
   );
 }
 
 export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChanged }: Props) {
-  const [modal, setModal] = useState<{ defaultCategory?: string } | null>(null);
+  const [modal, setModal] = useState<{ defaultCategory?: string; task?: DayTask } | null>(null);
 
   async function toggleDone(task: DayTask) {
     await updateTask(task.id, { status: task.status === 'Done' ? 'Backlog' : 'Done' });
+    onTasksChanged();
+  }
+
+  async function handleDelete(task: DayTask) {
+    if (!confirm(`Delete "${task.name}"? This also removes it from your Google Calendar.`)) {
+      return;
+    }
+    await deleteTask(task.id);
     onTasksChanged();
   }
 
@@ -76,7 +108,13 @@ export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChang
             </h2>
             <div className="flex flex-col gap-2">
               {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} onToggle={() => toggleDone(t)} />
+                <TaskRow
+                  key={t.id}
+                  task={t}
+                  onToggle={() => toggleDone(t)}
+                  onEdit={() => setModal({ task: t })}
+                  onDelete={() => handleDelete(t)}
+                />
               ))}
             </div>
           </section>
@@ -90,7 +128,13 @@ export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChang
           </h2>
           <div className="flex flex-col gap-2">
             {miscTasks.map((t) => (
-              <TaskRow key={t.id} task={t} onToggle={() => toggleDone(t)} />
+              <TaskRow
+                key={t.id}
+                task={t}
+                onToggle={() => toggleDone(t)}
+                onEdit={() => setModal({ task: t })}
+                onDelete={() => handleDelete(t)}
+              />
             ))}
           </div>
         </section>
@@ -101,11 +145,12 @@ export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChang
       )}
 
       {modal && (
-        <AddTaskModal
+        <TaskFormModal
           day={day}
           defaultCategory={modal.defaultCategory}
+          task={modal.task}
           onClose={() => setModal(null)}
-          onCreated={onTasksChanged}
+          onSaved={onTasksChanged}
         />
       )}
     </div>

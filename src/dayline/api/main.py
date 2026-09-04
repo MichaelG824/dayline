@@ -321,11 +321,13 @@ def create_task(body: TaskCreateRequest) -> dict[str, Any]:
 
 
 class TaskUpdateRequest(BaseModel):
+    name: str | None = None
     estDurationMin: int | None = None
     priority: str | None = None
     plannedDate: str | None = None
     category: str | None = None
     status: str | None = None
+    fixedTime: str | None = None
 
 
 @app.patch("/api/tasks/{task_id}")
@@ -333,15 +335,26 @@ def update_task(task_id: str, body: TaskUpdateRequest) -> dict[str, Any]:
     try:
         updated = _task_source.update_task(
             task_id,
+            name=body.name,
             status=_parse_status(body.status) if body.status else None,
             est_duration_min=body.estDurationMin,
             priority=_parse_priority(body.priority) if body.priority else None,
             planned_date=date.fromisoformat(body.plannedDate) if body.plannedDate else None,
             category=_parse_category(body.category) if body.category else None,
+            fixed_time=datetime.fromisoformat(body.fixedTime) if body.fixedTime else None,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"No task {task_id!r}") from exc
     return _task_json(updated, _task_source)
+
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+def delete_task(task_id: str) -> None:
+    """Delete a task outright - the next plan computation (which the frontend
+    triggers via onTasksChanged) naturally reconciles the real calendar,
+    since a deleted task is no longer eligible and drops out of the plan's
+    blocks; no calendar-specific code is needed here."""
+    _task_source.delete_task(task_id)
 
 
 @app.get("/api/category-weights")
