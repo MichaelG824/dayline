@@ -97,8 +97,7 @@ def run_daily_plan(
 
 def _delete_marker_blocks(calendar: CalendarClient, day: date, marker: str) -> None:
     """Delete every marker-tagged block on ``day`` - the idempotency half of
-    the reconciliation, reused by both the in-memory scheduling calendar and
-    :func:`sync_plan_to_calendar`'s push to a real calendar."""
+    the in-memory scheduling calendar's reconciliation."""
     for event in calendar.list_events(day):
         if event.title.startswith(marker):
             calendar.delete_event(event.event_id)
@@ -110,21 +109,6 @@ def _write_blocks(
     """Create one marker-tagged calendar block per placed block."""
     for block in blocks:
         calendar.create_block(f"{marker}{block.title}", block.start, block.end)
-
-
-def sync_plan_to_calendar(
-    calendar: CalendarClient, day: date, plan: Plan, marker: str = AGENT_MARKER
-) -> None:
-    """Push an already-computed plan's blocks to ``calendar`` (delete prior
-    marker-tagged blocks for ``day``, then create fresh ones) - the same
-    idempotent reconciliation :func:`run_daily_plan` does internally, exposed
-    standalone so a *second*, real calendar can mirror the plan without being
-    the calendar :func:`run_daily_plan` itself reads busy time from or plans
-    against. Intended for a best-effort push once planning (against the fast,
-    reliable in-memory calendar) has already completed - see ``api/main.py``.
-    """
-    _delete_marker_blocks(calendar, day, marker)
-    _write_blocks(calendar, plan.blocks, marker)
 
 
 def is_due(recurs: Recurrence, recur_day: Weekday | None, day: date) -> bool:

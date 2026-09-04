@@ -4,9 +4,10 @@ This holds zero scheduling logic: it calls :func:`run_daily_plan` and
 serializes the result as JSON for the Next.js frontend (``web/``). Tasks,
 applications, and interviews are persisted in Supabase (see
 ``supabase/schema.sql`` + ``supabase/migrations/``); the day-scheduling
-calendar stays an in-memory fake per day (writing planned task blocks to a
-real calendar remains a separate, deferred step). A real Google Calendar is
-wired in for interview sync and best-effort task-block push-sync - see the
+calendar stays an in-memory fake per day - task blocks live entirely in the
+app and are never written to a real calendar (deliberate: tasks are Dayline's
+own scheduling detail, not something the user wants cluttering their real
+calendar). A real Google Calendar is wired in for interviews only - see the
 ``/api/calendar/*`` endpoints below.
 
 Run it with::
@@ -66,11 +67,7 @@ from dayline.models import (  # noqa: E402
     Weekday,
     Window,
 )
-from dayline.scheduler.run import (  # noqa: E402
-    AGENT_MARKER,
-    run_daily_plan,
-    sync_plan_to_calendar,
-)
+from dayline.scheduler.run import AGENT_MARKER, run_daily_plan  # noqa: E402
 
 app = FastAPI(title="Dayline API")
 
@@ -245,12 +242,6 @@ def plan_day(day: date) -> dict[str, Any]:
     calendar = _calendar(day)
     plan = run_daily_plan(day, _task_source, calendar, interview_source=_interview_source)
     agent_blocks = [e for e in calendar.list_events(day) if e.title.startswith(AGENT_MARKER)]
-    if _google_calendar is not None:
-        # Best-effort mirror of today's blocks to the real calendar - planning
-        # itself stays on the fast, reliable in-memory calendar above, so a
-        # Google hiccup here must never break viewing or editing tasks.
-        with contextlib.suppress(Exception):
-            sync_plan_to_calendar(_google_calendar, day, plan)
     return {
         "day": day.isoformat(),
         **_plan_json(plan, _task_source),
