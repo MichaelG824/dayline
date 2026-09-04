@@ -51,6 +51,11 @@ class CalendarClient(Protocol):
         """Return full events overlapping ``day`` (used to reconcile agent blocks)."""
         ...
 
+    def list_events_range(self, start_day: date, end_day: date) -> list[CalendarEvent]:
+        """Return full events overlapping ``[start_day, end_day]`` (inclusive),
+        soonest first. Used by the calendar agenda view."""
+        ...
+
     def create_block(self, title: str, start: datetime, end: datetime) -> str:
         """Create a timed event; return its event id."""
         ...
@@ -77,6 +82,9 @@ class InMemoryCalendar:
     def _overlaps_day(self, ev: CalendarEvent, day: date) -> bool:
         return ev.start.date() <= day <= (ev.end.date())
 
+    def _overlaps_range(self, ev: CalendarEvent, start_day: date, end_day: date) -> bool:
+        return ev.start.date() <= end_day and start_day <= ev.end.date()
+
     def list_busy(self, day: date) -> list[TimeSlot]:
         return [
             ev.slot
@@ -89,6 +97,13 @@ class InMemoryCalendar:
             ev
             for ev in sorted(self._events.values(), key=lambda e: e.start)
             if self._overlaps_day(ev, day)
+        ]
+
+    def list_events_range(self, start_day: date, end_day: date) -> list[CalendarEvent]:
+        return [
+            ev
+            for ev in sorted(self._events.values(), key=lambda e: e.start)
+            if self._overlaps_range(ev, start_day, end_day)
         ]
 
     def create_block(self, title: str, start: datetime, end: datetime) -> str:
@@ -152,26 +167,36 @@ class GoogleCalendarClient:
                 "the extra: pip install '.[google]'."
             ) from exc
         self._calendar_id = calendar_id
-        creds = self._load_credentials(credentials_path, token_path)
-        self._service = build("calendar", "v3", credentials=creds)
+        self._creds = self._load_credentials(credentials_path, token_path)
+        self._service = build("calendar", "v3", credentials=self._creds)
         self._tz = timezone or self._detect_timezone()
 
     # --- CalendarClient Protocol --------------------------------------------
-    def list_events(self, day: date) -> list[CalendarEvent]:
-        start = datetime.combine(day, time.min)
-        end = start + timedelta(days=1)
-        items = (
-            self._service.events()
-            .list(
+    def _execute(self, request: Any) -> Any:
+        # googleapiclient's underlying httplib2.Http transport isn't
+        # thread-safe; FastAPI runs sync endpoints in a thread pool, so two
+        # concurrent calls sharing one transport can corrupt each other's
+        # connection (observed as SSLError: RECORD_LAYER_FAILURE). Google's
+        # own guidance is a fresh Http() per request - see
+        # https://googleapis.github.io/google-api-python-client/docs/thread_safety.html
+        # A plain httplib2.Http() carries no credentials, so wrap it with
+        # AuthorizedHttp (the same bridge googleapiclient uses internally) to
+        # keep requests authenticated.
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+
+        return request.execute(http=AuthorizedHttp(self._creds, http=httplib2.Http()))
+
+    def _list_events_between(self, start: datetime, end: datetime) -> list[CalendarEvent]:
+        items = self._execute(
+            self._service.events().list(
                 calendarId=self._calendar_id,
                 timeMin=_to_rfc3339(start, self._tz),
                 timeMax=_to_rfc3339(end, self._tz),
                 singleEvents=True,
                 orderBy="startTime",
             )
-            .execute()
-            .get("items", [])
-        )
+        ).get("items", [])
         events: list[CalendarEvent] = []
         for item in items:
             s = _parse_google_dt(item.get("start", {}), self._tz)
@@ -180,6 +205,15 @@ class GoogleCalendarClient:
                 continue  # skip all-day / malformed events
             events.append(CalendarEvent(item["id"], item.get("summary", ""), s, e))
         return events
+
+    def list_events(self, day: date) -> list[CalendarEvent]:
+        start = datetime.combine(day, time.min)
+        return self._list_events_between(start, start + timedelta(days=1))
+
+    def list_events_range(self, start_day: date, end_day: date) -> list[CalendarEvent]:
+        start = datetime.combine(start_day, time.min)
+        end = datetime.combine(end_day, time.min) + timedelta(days=1)
+        return self._list_events_between(start, end)
 
     def list_busy(self, day: date) -> list[TimeSlot]:
         return [ev.slot for ev in self.list_events(day)]
@@ -190,10 +224,8 @@ class GoogleCalendarClient:
             "start": {"dateTime": _to_rfc3339(start, self._tz), "timeZone": self._tz},
             "end": {"dateTime": _to_rfc3339(end, self._tz), "timeZone": self._tz},
         }
-        event = (
-            self._service.events()
-            .insert(calendarId=self._calendar_id, body=body)
-            .execute()
+        event = self._execute(
+            self._service.events().insert(calendarId=self._calendar_id, body=body)
         )
         return str(event["id"])
 
@@ -201,9 +233,11 @@ class GoogleCalendarClient:
         from googleapiclient.errors import HttpError
 
         try:
-            self._service.events().delete(
-                calendarId=self._calendar_id, eventId=event_id
-            ).execute()
+            self._execute(
+                self._service.events().delete(
+                    calendarId=self._calendar_id, eventId=event_id
+                )
+            )
         except HttpError as exc:
             if exc.resp.status not in (404, 410):  # already gone is fine
                 raise
@@ -248,7 +282,7 @@ class GoogleCalendarClient:
 
     def _detect_timezone(self) -> str:
         try:
-            cal = self._service.calendars().get(calendarId=self._calendar_id).execute()
+            cal = self._execute(self._service.calendars().get(calendarId=self._calendar_id))
             return str(cal.get("timeZone", "UTC"))
         except Exception:
             return "UTC"

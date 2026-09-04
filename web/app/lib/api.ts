@@ -232,6 +232,27 @@ export async function syncInterviewsToCalendar(): Promise<{ synced: number }> {
   return res.json();
 }
 
+export interface AgendaItem {
+  kind: 'interview' | 'event';
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  category: string | null;
+  company: string | null;
+  interviewId: string | null;
+}
+
+export interface AgendaResponse {
+  googleConnected: boolean;
+  items: AgendaItem[];
+}
+
+export async function getCalendarAgenda(): Promise<AgendaResponse> {
+  const res = await fetch(`${API}/api/calendar/agenda`, { cache: 'no-store' });
+  return (await checkOk(res, 'Failed to load calendar agenda')).json();
+}
+
 export async function getApplications(): Promise<Application[]> {
   const res = await fetch(`${API}/api/applications`, { cache: 'no-store' });
   return (await checkOk(res, 'Failed to load applications')).json();

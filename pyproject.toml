@@ -33,6 +33,7 @@ dependencies = [
 google = [
     "google-api-python-client>=2.0",
     "google-auth-oauthlib>=1.0",
+    "google-auth-httplib2>=0.2",
 ]
 dev = [
     "pytest>=8.0",
@@ -68,5 +69,11 @@ strict = true
 # The google extra ships no type stubs/py.typed marker; GoogleCalendarClient
 # is the only caller and already narrows its surface to plain str/dict types.
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*", "google_auth_oauthlib.*", "google.*"]
+module = [
+    "googleapiclient.*",
+    "google_auth_oauthlib.*",
+    "google.*",
+    "httplib2.*",
+    "google_auth_httplib2.*",
+]
 ignore_missing_imports = true

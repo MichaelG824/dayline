@@ -3,8 +3,11 @@
 This holds zero scheduling logic: it calls :func:`run_daily_plan` and
 serializes the result as JSON for the Next.js frontend (``web/``). Tasks,
 applications, and interviews are persisted in Supabase (see
-``supabase/schema.sql`` + ``supabase/migrations/``); the calendar stays an
-in-memory fake per day (Google Calendar wiring is a separate, deferred step).
+``supabase/schema.sql`` + ``supabase/migrations/``); the day-scheduling
+calendar stays an in-memory fake per day (writing planned task blocks to a
+real calendar remains a separate, deferred step). A real Google Calendar is
+wired in for interview sync and the calendar agenda view - see the
+``/api/calendar/*`` endpoints below.
 
 Run it with::
 
@@ -19,7 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import anthropic
@@ -40,7 +43,11 @@ from dayline.adapters.category_weights import (  # noqa: E402
     get_category_weights,
     set_category_ranks,
 )
-from dayline.adapters.interview_calendar_sync import sync_interview_event  # noqa: E402
+from dayline.adapters.interview_calendar_sync import (  # noqa: E402
+    INTERVIEW_EVENT_DURATION_MIN,
+    interview_event_title,
+    sync_interview_event,
+)
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
 from dayline.adapters.supabase_client import get_supabase_client  # noqa: E402
 from dayline.adapters.task_source import SupabaseTaskSource  # noqa: E402
@@ -62,6 +69,9 @@ from dayline.models import (  # noqa: E402
 from dayline.scheduler.run import AGENT_MARKER, run_daily_plan  # noqa: E402
 
 app = FastAPI(title="Dayline API")
+
+# How far ahead the calendar agenda view (GET /api/calendar/agenda) looks.
+AGENDA_WINDOW_DAYS = 14
 
 # The Next.js dev server runs on :3000; this API is single-user/local so an
 # open CORS policy scoped to that one origin is enough (see AGENTS.md).
@@ -437,6 +447,62 @@ def sync_interviews() -> dict[str, int]:
         _interview_source.update_interview(interview.id, google_event_id=event_id)
         synced += 1
     return {"synced": synced}
+
+
+@app.get("/api/calendar/agenda")
+def calendar_agenda() -> dict[str, Any]:
+    """Chronological view of what's coming up: every tracked interview (local
+    data, shown regardless of connection) plus - if connected - every other
+    Google Calendar event in the same window. A synced interview's own
+    calendar event is skipped from the Google side so it isn't shown twice."""
+    today = date.today()
+    end_day = today + timedelta(days=AGENDA_WINDOW_DAYS)
+
+    interviews = [
+        i for i in _interview_source.list_upcoming() if i.scheduled_at.date() <= end_day
+    ]
+    synced_event_ids = {i.google_event_id for i in interviews if i.google_event_id}
+
+    items: list[dict[str, Any]] = []
+    for interview in interviews:
+        application = None
+        with contextlib.suppress(KeyError):
+            application = _application_source.get_application(interview.application_id)
+        items.append(
+            {
+                "kind": "interview",
+                "id": interview.id,
+                "title": interview_event_title(interview, application),
+                "start": interview.scheduled_at.isoformat(),
+                "end": (
+                    interview.scheduled_at
+                    + timedelta(minutes=INTERVIEW_EVENT_DURATION_MIN)
+                ).isoformat(),
+                "category": interview.category.value,
+                "company": application.company if application else None,
+                "interviewId": interview.id,
+            }
+        )
+
+    if _google_calendar is not None:
+        for event in _google_calendar.list_events_range(today, end_day):
+            if event.event_id in synced_event_ids:
+                continue
+            items.append(
+                {
+                    "kind": "event",
+                    "id": event.event_id,
+                    "title": event.title,
+                    "start": event.start.isoformat(),
+                    "end": event.end.isoformat(),
+                    "category": None,
+                    "company": None,
+                    "interviewId": None,
+                }
+            )
+
+    items.sort(key=lambda item: item["start"])
+    return {"googleConnected": _google_calendar is not None, "items": items}
 
 
 @app.get("/api/applications")
