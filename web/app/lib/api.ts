@@ -232,6 +232,43 @@ export async function syncInterviewsToCalendar(): Promise<{ synced: number }> {
   return res.json();
 }
 
+export interface ImportableEvent {
+  eventId: string;
+  title: string;
+  start: string;
+  suggestedCompany: string;
+}
+
+export async function getImportableCalendarEvents(): Promise<ImportableEvent[]> {
+  const res = await fetch(`${API}/api/calendar/importable-events`, { cache: 'no-store' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to load calendar events');
+  }
+  return res.json();
+}
+
+export interface ImportCalendarEventInput {
+  eventId: string;
+  start: string;
+  company: string;
+  category: string;
+  notes?: string;
+}
+
+export async function importCalendarEvent(input: ImportCalendarEventInput): Promise<Interview> {
+  const res = await fetch(`${API}/api/calendar/import-event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to import calendar event');
+  }
+  return res.json();
+}
+
 export async function getApplications(): Promise<Application[]> {
   const res = await fetch(`${API}/api/applications`, { cache: 'no-store' });
   return (await checkOk(res, 'Failed to load applications')).json();

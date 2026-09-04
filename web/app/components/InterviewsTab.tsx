@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   Application,
+  ImportableEvent,
   Interview,
   PREP_CATEGORIES,
   connectCalendar,
@@ -10,6 +11,8 @@ import {
   createInterview,
   deleteInterview,
   getCalendarStatus,
+  getImportableCalendarEvents,
+  importCalendarEvent,
   syncInterviewsToCalendar,
 } from '../lib/api';
 import { categoryMeta } from '../lib/categories';
@@ -62,24 +65,25 @@ function InterviewCard({ interview, onDelete }: { interview: Interview; onDelete
   );
 }
 
-function CalendarConnect({ onSynced }: { onSynced: () => void }) {
-  const [connected, setConnected] = useState<boolean | null>(null);
+function CalendarConnect({
+  connected,
+  onConnected,
+  onSynced,
+}: {
+  connected: boolean | null;
+  onConnected: () => void;
+  onSynced: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncedCount, setSyncedCount] = useState<number | null>(null);
-
-  useEffect(() => {
-    getCalendarStatus()
-      .then((s) => setConnected(s.connected))
-      .catch(() => setConnected(false));
-  }, []);
 
   async function handleConnect() {
     setBusy(true);
     setError(null);
     try {
       await connectCalendar();
-      setConnected(true);
+      onConnected();
       const { synced } = await syncInterviewsToCalendar();
       setSyncedCount(synced);
       onSynced();
@@ -145,7 +149,111 @@ function CalendarConnect({ onSynced }: { onSynced: () => void }) {
   );
 }
 
+interface ImportDraft {
+  company: string;
+  category: string;
+}
+
+function ImportFromCalendar({ connected, onImported }: { connected: boolean | null; onImported: () => void }) {
+  const [events, setEvents] = useState<ImportableEvent[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, ImportDraft>>({});
+  const [importingId, setImportingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!connected) {
+      setEvents([]);
+      return;
+    }
+    getImportableCalendarEvents()
+      .then((items) => {
+        setEvents(items);
+        setDrafts((prev) => {
+          const next = { ...prev };
+          for (const item of items) {
+            if (!next[item.eventId]) {
+              next[item.eventId] = { company: item.suggestedCompany, category: PREP_CATEGORIES[0] };
+            }
+          }
+          return next;
+        });
+      })
+      .catch(() => setEvents([]));
+  }, [connected]);
+
+  function updateDraft(eventId: string, patch: Partial<ImportDraft>) {
+    setDrafts((prev) => ({ ...prev, [eventId]: { ...prev[eventId], ...patch } }));
+  }
+
+  async function handleImport(item: ImportableEvent) {
+    const draft = drafts[item.eventId] ?? { company: item.suggestedCompany, category: PREP_CATEGORIES[0] };
+    setImportingId(item.eventId);
+    setError(null);
+    try {
+      await importCalendarEvent({
+        eventId: item.eventId,
+        start: item.start,
+        company: draft.company.trim() || item.suggestedCompany,
+        category: draft.category,
+      });
+      setEvents((prev) => prev.filter((e) => e.eventId !== item.eventId));
+      onImported();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import event');
+    } finally {
+      setImportingId(null);
+    }
+  }
+
+  if (!connected || events.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4 flex flex-col gap-3">
+      <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+        Found on your calendar - import as an interview?
+      </p>
+      <div className="flex flex-col gap-2">
+        {events.map((item) => {
+          const draft = drafts[item.eventId] ?? { company: item.suggestedCompany, category: PREP_CATEGORIES[0] };
+          return (
+            <div key={item.eventId} className="flex items-center gap-2 flex-wrap">
+              <input
+                value={draft.company}
+                onChange={(e) => updateDraft(item.eventId, { company: e.target.value })}
+                className="flex-1 min-w-[10rem] bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg px-3 py-1.5 text-sm"
+              />
+              <span className="text-xs text-zinc-500 font-mono shrink-0">
+                {formatDateTimeLabel(item.start)}
+              </span>
+              <select
+                value={draft.category}
+                onChange={(e) => updateDraft(item.eventId, { category: e.target.value })}
+                className="bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg px-2 py-1.5 text-sm"
+              >
+                {PREP_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => handleImport(item)}
+                disabled={importingId === item.eventId}
+                className="px-3 py-1.5 text-xs rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-40 shrink-0"
+              >
+                {importingId === item.eventId ? 'Importing...' : 'Import'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {error && <p className="text-rose-600 dark:text-rose-400 text-sm">{error}</p>}
+    </div>
+  );
+}
+
 export function InterviewsTab({ interviews, applications, onChanged }: Props) {
+  const [connected, setConnected] = useState<boolean | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [company, setCompany] = useState('');
   const [role, setRole] = useState('');
@@ -155,6 +263,12 @@ export function InterviewsTab({ interviews, applications, onChanged }: Props) {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getCalendarStatus()
+      .then((s) => setConnected(s.connected))
+      .catch(() => setConnected(false));
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -192,14 +306,22 @@ export function InterviewsTab({ interviews, applications, onChanged }: Props) {
     }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete(id: string, company: string | null) {
+    if (!confirm(`Delete the ${company ?? 'this'} interview? This also removes its Google Calendar event and cannot be undone.`)) {
+      return;
+    }
     await deleteInterview(id);
     onChanged();
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <CalendarConnect onSynced={onChanged} />
+      <CalendarConnect
+        connected={connected}
+        onConnected={() => setConnected(true)}
+        onSynced={onChanged}
+      />
+      <ImportFromCalendar connected={connected} onImported={onChanged} />
 
       <div className="flex justify-end">
         <button
@@ -212,7 +334,7 @@ export function InterviewsTab({ interviews, applications, onChanged }: Props) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {interviews.map((i) => (
-          <InterviewCard key={i.id} interview={i} onDelete={() => handleDelete(i.id)} />
+          <InterviewCard key={i.id} interview={i} onDelete={() => handleDelete(i.id, i.company)} />
         ))}
       </div>
       {interviews.length === 0 && <p className="text-zinc-500 text-sm">None scheduled.</p>}

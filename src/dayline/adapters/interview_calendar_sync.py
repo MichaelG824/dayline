@@ -29,6 +29,20 @@ def interview_event_title(interview: Interview, application: Application | None)
     return f"Interview: {company} ({interview.category.value})"
 
 
+_TITLE_STOPWORDS = {"interview", "interviews", "with", "call", "screen", "screening", "round"}
+
+
+def guess_company_from_title(title: str) -> str:
+    """Best-effort company name guess from a calendar event title - e.g.
+    "Interview with Acme" or "Acme interview" -> "Acme". Only used to
+    pre-fill the import flow's editable company field, so an imperfect guess
+    (or the unchanged title, if nothing is left after stripping filler
+    words) is fine - the user can fix it before importing."""
+    kept = [t for t in title.split() if t.strip(":,.-").lower() not in _TITLE_STOPWORDS]
+    guess = " ".join(kept).strip()
+    return guess or title
+
+
 def sync_interview_event(
     calendar: CalendarClient, interview: Interview, application: Application | None
 ) -> str:

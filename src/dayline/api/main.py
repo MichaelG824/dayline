@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import anthropic
 from dotenv import load_dotenv
@@ -43,7 +44,10 @@ from dayline.adapters.category_weights import (  # noqa: E402
     get_category_weights,
     set_category_ranks,
 )
-from dayline.adapters.interview_calendar_sync import sync_interview_event  # noqa: E402
+from dayline.adapters.interview_calendar_sync import (  # noqa: E402
+    guess_company_from_title,
+    sync_interview_event,
+)
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
 from dayline.adapters.supabase_client import get_supabase_client  # noqa: E402
 from dayline.adapters.task_source import SupabaseTaskSource  # noqa: E402
@@ -69,6 +73,9 @@ from dayline.scheduler.run import (  # noqa: E402
 )
 
 app = FastAPI(title="Dayline API")
+
+# How far ahead GET /api/calendar/importable-events looks for candidate events.
+IMPORTABLE_EVENTS_WINDOW_DAYS = 30
 
 # The Next.js dev server runs on :3000; this API is single-user/local so an
 # open CORS policy scoped to that one origin is enough (see AGENTS.md).
@@ -450,6 +457,74 @@ def sync_interviews() -> dict[str, int]:
         _interview_source.update_interview(interview.id, google_event_id=event_id)
         synced += 1
     return {"synced": synced}
+
+
+@app.get("/api/calendar/importable-events")
+def importable_calendar_events() -> list[dict[str, Any]]:
+    """Upcoming real calendar events not yet linked to a tracked interview -
+    candidates the user can import as an interview instead of typing one in
+    by hand. A best-effort company guess is included as a starting point for
+    the (always editable) import form."""
+    if _google_calendar is None:
+        raise HTTPException(status_code=409, detail="Google Calendar is not connected yet.")
+    linked_event_ids = {
+        i.google_event_id for i in _interview_source.list_upcoming() if i.google_event_id
+    }
+    today = date.today()
+    end_day = today + timedelta(days=IMPORTABLE_EVENTS_WINDOW_DAYS)
+    tz = ZoneInfo(_google_calendar.timezone)
+    candidates: dict[str, dict[str, Any]] = {}
+    for event in _google_calendar.list_events_range(today, end_day):
+        if event.event_id in linked_event_ids or event.title.startswith(AGENT_MARKER):
+            continue
+        # event.start is a naive local datetime (CalendarClient convention) -
+        # attach the calendar's real tz before this crosses the wire, or a
+        # timestamptz column on the other end will silently treat it as UTC
+        # and shift the wall-clock time (caught via a real 5-hour-off import).
+        candidates[event.event_id] = {
+            "eventId": event.event_id,
+            "title": event.title,
+            "start": event.start.replace(tzinfo=tz).isoformat(),
+            "suggestedCompany": guess_company_from_title(event.title),
+        }
+    return sorted(candidates.values(), key=lambda item: item["start"])
+
+
+class ImportCalendarEventRequest(BaseModel):
+    eventId: str
+    start: str
+    company: str
+    category: str
+    notes: str | None = None
+
+
+@app.post("/api/calendar/import-event", status_code=201)
+def import_calendar_event(body: ImportCalendarEventRequest) -> dict[str, Any]:
+    """Turn an existing calendar event into a tracked interview - reuses the
+    event's id directly (``google_event_id``) rather than creating a new
+    duplicate event, since it's already sitting on the real calendar."""
+    if _google_calendar is None:
+        raise HTTPException(status_code=409, detail="Google Calendar is not connected yet.")
+    try:
+        category = InterviewCategory(body.category)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown interview category {body.category!r}"
+        ) from exc
+
+    application = _application_source.create_application(
+        Application(id=str(uuid.uuid4()), company=body.company, role="")
+    )
+    interview = Interview(
+        id=str(uuid.uuid4()),
+        application_id=application.id,
+        category=category,
+        scheduled_at=datetime.fromisoformat(body.start),
+        notes=body.notes,
+        google_event_id=body.eventId,
+    )
+    created = _interview_source.create_interview(interview)
+    return _interview_json(created)
 
 
 @app.get("/api/applications")

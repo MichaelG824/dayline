@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from dayline.adapters.calendar import InMemoryCalendar
 from dayline.adapters.interview_calendar_sync import (
     INTERVIEW_EVENT_DURATION_MIN,
+    guess_company_from_title,
     interview_event_title,
     sync_interview_event,
 )
@@ -73,3 +74,19 @@ def test_resync_deletes_old_event_and_creates_new() -> None:
     events = calendar.list_events(interview.scheduled_at.date())
     assert len(events) == 1
     assert events[0].event_id == second_id
+
+
+def test_guess_company_strips_interview_with_prefix() -> None:
+    assert guess_company_from_title("Interview with GiveCampus") == "GiveCampus"
+
+
+def test_guess_company_strips_interview_suffix() -> None:
+    assert guess_company_from_title("amazon interview") == "amazon"
+
+
+def test_guess_company_keeps_multi_word_company() -> None:
+    assert guess_company_from_title("Interview with Thrive Market") == "Thrive Market"
+
+
+def test_guess_company_falls_back_to_title_when_nothing_left() -> None:
+    assert guess_company_from_title("Interview") == "Interview"

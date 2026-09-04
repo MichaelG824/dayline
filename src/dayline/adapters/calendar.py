@@ -51,6 +51,11 @@ class CalendarClient(Protocol):
         """Return full events overlapping ``day`` (used to reconcile agent blocks)."""
         ...
 
+    def list_events_range(self, start_day: date, end_day: date) -> list[CalendarEvent]:
+        """Return full events overlapping ``[start_day, end_day]`` (inclusive),
+        soonest first. Used to find calendar events importable as interviews."""
+        ...
+
     def create_block(self, title: str, start: datetime, end: datetime) -> str:
         """Create a timed event; return its event id."""
         ...
@@ -77,6 +82,9 @@ class InMemoryCalendar:
     def _overlaps_day(self, ev: CalendarEvent, day: date) -> bool:
         return ev.start.date() <= day <= (ev.end.date())
 
+    def _overlaps_range(self, ev: CalendarEvent, start_day: date, end_day: date) -> bool:
+        return ev.start.date() <= end_day and start_day <= ev.end.date()
+
     def list_busy(self, day: date) -> list[TimeSlot]:
         return [
             ev.slot
@@ -89,6 +97,13 @@ class InMemoryCalendar:
             ev
             for ev in sorted(self._events.values(), key=lambda e: e.start)
             if self._overlaps_day(ev, day)
+        ]
+
+    def list_events_range(self, start_day: date, end_day: date) -> list[CalendarEvent]:
+        return [
+            ev
+            for ev in sorted(self._events.values(), key=lambda e: e.start)
+            if self._overlaps_range(ev, start_day, end_day)
         ]
 
     def create_block(self, title: str, start: datetime, end: datetime) -> str:
@@ -156,6 +171,14 @@ class GoogleCalendarClient:
         self._service = build("calendar", "v3", credentials=self._creds)
         self._tz = timezone or self._detect_timezone()
 
+    @property
+    def timezone(self) -> str:
+        """IANA tz name events are read/written in - callers that need to
+        serialize a :class:`CalendarEvent`'s naive local time unambiguously
+        (e.g. across a wire boundary) must attach this before doing so; see
+        ``api/main.py``'s calendar-import endpoint."""
+        return self._tz
+
     # --- CalendarClient Protocol --------------------------------------------
     def _execute(self, request: Any) -> Any:
         # googleapiclient's underlying httplib2.Http transport isn't
@@ -194,6 +217,11 @@ class GoogleCalendarClient:
     def list_events(self, day: date) -> list[CalendarEvent]:
         start = datetime.combine(day, time.min)
         return self._list_events_between(start, start + timedelta(days=1))
+
+    def list_events_range(self, start_day: date, end_day: date) -> list[CalendarEvent]:
+        start = datetime.combine(start_day, time.min)
+        end = datetime.combine(end_day, time.min) + timedelta(days=1)
+        return self._list_events_between(start, end)
 
     def list_busy(self, day: date) -> list[TimeSlot]:
         return [ev.slot for ev in self.list_events(day)]
