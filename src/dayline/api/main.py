@@ -74,8 +74,9 @@ from dayline.scheduler.run import (  # noqa: E402
 
 app = FastAPI(title="Dayline API")
 
-# How far ahead GET /api/calendar/importable-events looks for candidate events.
-IMPORTABLE_EVENTS_WINDOW_DAYS = 30
+# How far ahead interview auto-discovery (_reconcile_calendar_interviews)
+# looks for calendar events to track.
+INTERVIEW_DISCOVERY_WINDOW_DAYS = 30
 
 # The Next.js dev server runs on :3000; this API is single-user/local so an
 # open CORS policy scoped to that one origin is enough (see AGENTS.md).
@@ -136,6 +137,15 @@ def _parse_window(value: str) -> Window:
         return Window(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Unknown window {value!r}") from exc
+
+
+def _parse_interview_category(value: str) -> InterviewCategory:
+    try:
+        return InterviewCategory(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown interview category {value!r}"
+        ) from exc
 
 
 def _parse_recurrence(value: str) -> Recurrence:
@@ -221,6 +231,8 @@ def _interview_json(interview: Interview) -> dict[str, Any]:
         "scheduledAt": interview.scheduled_at.isoformat(),
         "notes": interview.notes,
         "syncedToCalendar": interview.google_event_id is not None,
+        "googleEventOwned": interview.google_event_owned,
+        "hidden": interview.hidden,
     }
 
 
@@ -365,10 +377,99 @@ def apply_category_weights() -> dict[str, int]:
     return {"updated": updated}
 
 
+def _reconcile_calendar_interviews() -> None:
+    """Auto-discover tracked interviews from the real calendar and keep
+    already-linked ones' times in sync with it - the calendar is the source
+    of truth for *when*, so "rescheduling" is just moving the event there.
+    Company/category are set once and never overwritten, so a user's
+    correction survives. Best-effort: never raises, since a Google hiccup
+    must not break loading the Interviews tab."""
+    if _google_calendar is None:
+        return
+    today = date.today()
+    end_day = today + timedelta(days=INTERVIEW_DISCOVERY_WINDOW_DAYS)
+    tz = ZoneInfo(_google_calendar.timezone)
+
+    # after=start of today, include_hidden=True: a hidden interview's event
+    # must still count as "already linked" or it would be rediscovered.
+    tracked = _interview_source.list_upcoming(
+        after=datetime.combine(today, datetime.min.time()), include_hidden=True
+    )
+    by_event_id = {i.google_event_id: i for i in tracked if i.google_event_id}
+
+    ranks = get_category_ranks(_client)
+    top_category = min(ranks, key=lambda c: ranks[c])
+    default_category = InterviewCategory(top_category.value)
+
+    for event in _google_calendar.list_events_range(today, end_day):
+        if event.title.startswith(AGENT_MARKER):
+            continue
+        start = event.start.replace(tzinfo=tz)
+        existing = by_event_id.get(event.event_id)
+        if existing is None:
+            application = _application_source.create_application(
+                Application(
+                    id=str(uuid.uuid4()),
+                    company=guess_company_from_title(event.title),
+                    role="",
+                )
+            )
+            _interview_source.create_interview(
+                Interview(
+                    id=str(uuid.uuid4()),
+                    application_id=application.id,
+                    category=default_category,
+                    scheduled_at=start,
+                    google_event_id=event.event_id,
+                    google_event_owned=False,
+                )
+            )
+        elif not existing.hidden and existing.scheduled_at != start:
+            _interview_source.set_scheduled_at(existing.id, start)
+
+
 @app.get("/api/interviews")
 def list_interviews(upcoming: bool = True) -> list[dict[str, Any]]:
+    with contextlib.suppress(Exception):
+        _reconcile_calendar_interviews()
     after = datetime.now() if upcoming else datetime.min
     return [_interview_json(i) for i in _interview_source.list_upcoming(after=after)]
+
+
+@app.get("/api/interviews/hidden")
+def list_hidden_interviews() -> list[dict[str, Any]]:
+    return [_interview_json(i) for i in _interview_source.list_hidden()]
+
+
+@app.post("/api/interviews/{interview_id}/unhide")
+def unhide_interview(interview_id: str) -> dict[str, Any]:
+    try:
+        updated = _interview_source.unhide_interview(interview_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"No interview {interview_id!r}") from exc
+    return _interview_json(updated)
+
+
+class InterviewCategoryUpdateRequest(BaseModel):
+    category: str
+
+
+@app.patch("/api/interviews/{interview_id}")
+def update_interview_category(
+    interview_id: str, body: InterviewCategoryUpdateRequest
+) -> dict[str, Any]:
+    category = _parse_interview_category(body.category)
+    try:
+        updated = _interview_source.set_category(interview_id, category)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"No interview {interview_id!r}") from exc
+    if _google_calendar is not None and updated.google_event_id:
+        with contextlib.suppress(Exception):
+            application = None
+            with contextlib.suppress(KeyError):
+                application = _application_source.get_application(updated.application_id)
+            sync_interview_event(_google_calendar, updated, application)
+    return _interview_json(updated)
 
 
 class InterviewCreateRequest(BaseModel):
@@ -380,12 +481,7 @@ class InterviewCreateRequest(BaseModel):
 
 @app.post("/api/interviews", status_code=201)
 def create_interview(body: InterviewCreateRequest) -> dict[str, Any]:
-    try:
-        category = InterviewCategory(body.category)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown interview category {body.category!r}"
-        ) from exc
+    category = _parse_interview_category(body.category)
     try:
         _application_source.get_application(body.applicationId)
     except KeyError as exc:
@@ -409,19 +505,27 @@ def create_interview(body: InterviewCreateRequest) -> dict[str, Any]:
             with contextlib.suppress(KeyError):
                 application = _application_source.get_application(created.application_id)
             event_id = sync_interview_event(_google_calendar, created, application)
-            created = _interview_source.update_interview(created.id, google_event_id=event_id)
+            # This call always creates a fresh event (created.google_event_id
+            # was None going in) - Dayline made it, so it owns it.
+            created = _interview_source.update_interview(
+                created.id, google_event_id=event_id, google_event_owned=True
+            )
     return _interview_json(created)
 
 
 @app.delete("/api/interviews/{interview_id}", status_code=204)
 def delete_interview(interview_id: str) -> None:
-    if _google_calendar is not None:
-        with contextlib.suppress(KeyError):
-            interview = _interview_source.get_interview(interview_id)
-            if interview.google_event_id:
-                with contextlib.suppress(Exception):
-                    _google_calendar.delete_event(interview.google_event_id)
-    _interview_source.delete_interview(interview_id)
+    with contextlib.suppress(KeyError):
+        interview = _interview_source.get_interview(interview_id)
+        if interview.google_event_id and not interview.google_event_owned:
+            # Discovered/imported from an event Dayline doesn't own - dismiss
+            # the tracking only, never touch the user's real calendar event.
+            _interview_source.hide_interview(interview_id)
+            return
+        if interview.google_event_id and _google_calendar is not None:
+            with contextlib.suppress(Exception):
+                _google_calendar.delete_event(interview.google_event_id)
+        _interview_source.delete_interview(interview_id)
 
 
 @app.get("/api/calendar/status")
@@ -453,78 +557,18 @@ def sync_interviews() -> dict[str, int]:
         application = None
         with contextlib.suppress(KeyError):
             application = _application_source.get_application(interview.application_id)
+        had_event = interview.google_event_id is not None
         event_id = sync_interview_event(_google_calendar, interview, application)
-        _interview_source.update_interview(interview.id, google_event_id=event_id)
+        if had_event:
+            _interview_source.update_interview(interview.id, google_event_id=event_id)
+        else:
+            # This call just created a fresh event - Dayline made it, so it
+            # owns it (matches create_interview's own-event bookkeeping).
+            _interview_source.update_interview(
+                interview.id, google_event_id=event_id, google_event_owned=True
+            )
         synced += 1
     return {"synced": synced}
-
-
-@app.get("/api/calendar/importable-events")
-def importable_calendar_events() -> list[dict[str, Any]]:
-    """Upcoming real calendar events not yet linked to a tracked interview -
-    candidates the user can import as an interview instead of typing one in
-    by hand. A best-effort company guess is included as a starting point for
-    the (always editable) import form."""
-    if _google_calendar is None:
-        raise HTTPException(status_code=409, detail="Google Calendar is not connected yet.")
-    linked_event_ids = {
-        i.google_event_id for i in _interview_source.list_upcoming() if i.google_event_id
-    }
-    today = date.today()
-    end_day = today + timedelta(days=IMPORTABLE_EVENTS_WINDOW_DAYS)
-    tz = ZoneInfo(_google_calendar.timezone)
-    candidates: dict[str, dict[str, Any]] = {}
-    for event in _google_calendar.list_events_range(today, end_day):
-        if event.event_id in linked_event_ids or event.title.startswith(AGENT_MARKER):
-            continue
-        # event.start is a naive local datetime (CalendarClient convention) -
-        # attach the calendar's real tz before this crosses the wire, or a
-        # timestamptz column on the other end will silently treat it as UTC
-        # and shift the wall-clock time (caught via a real 5-hour-off import).
-        candidates[event.event_id] = {
-            "eventId": event.event_id,
-            "title": event.title,
-            "start": event.start.replace(tzinfo=tz).isoformat(),
-            "suggestedCompany": guess_company_from_title(event.title),
-        }
-    return sorted(candidates.values(), key=lambda item: item["start"])
-
-
-class ImportCalendarEventRequest(BaseModel):
-    eventId: str
-    start: str
-    company: str
-    category: str
-    notes: str | None = None
-
-
-@app.post("/api/calendar/import-event", status_code=201)
-def import_calendar_event(body: ImportCalendarEventRequest) -> dict[str, Any]:
-    """Turn an existing calendar event into a tracked interview - reuses the
-    event's id directly (``google_event_id``) rather than creating a new
-    duplicate event, since it's already sitting on the real calendar."""
-    if _google_calendar is None:
-        raise HTTPException(status_code=409, detail="Google Calendar is not connected yet.")
-    try:
-        category = InterviewCategory(body.category)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown interview category {body.category!r}"
-        ) from exc
-
-    application = _application_source.create_application(
-        Application(id=str(uuid.uuid4()), company=body.company, role="")
-    )
-    interview = Interview(
-        id=str(uuid.uuid4()),
-        application_id=application.id,
-        category=category,
-        scheduled_at=datetime.fromisoformat(body.start),
-        notes=body.notes,
-        google_event_id=body.eventId,
-    )
-    created = _interview_source.create_interview(interview)
-    return _interview_json(created)
 
 
 @app.get("/api/applications")

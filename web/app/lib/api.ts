@@ -57,6 +57,8 @@ export interface Interview {
   scheduledAt: string;
   notes: string | null;
   syncedToCalendar: boolean;
+  googleEventOwned: boolean;
+  hidden: boolean;
 }
 
 export interface Proposal {
@@ -232,41 +234,36 @@ export async function syncInterviewsToCalendar(): Promise<{ synced: number }> {
   return res.json();
 }
 
-export interface ImportableEvent {
-  eventId: string;
-  title: string;
-  start: string;
-  suggestedCompany: string;
-}
-
-export async function getImportableCalendarEvents(): Promise<ImportableEvent[]> {
-  const res = await fetch(`${API}/api/calendar/importable-events`, { cache: 'no-store' });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? 'Failed to load calendar events');
-  }
-  return res.json();
-}
-
-export interface ImportCalendarEventInput {
-  eventId: string;
-  start: string;
-  company: string;
-  category: string;
-  notes?: string;
-}
-
-export async function importCalendarEvent(input: ImportCalendarEventInput): Promise<Interview> {
-  const res = await fetch(`${API}/api/calendar/import-event`, {
-    method: 'POST',
+// Interviews are now auto-discovered from the connected calendar (see
+// api/main.py's _reconcile_calendar_interviews, run on every
+// getUpcomingInterviews() call) - no manual import step. Category is the one
+// field a user still sets by hand on a discovered interview.
+export async function updateInterviewCategory(
+  interviewId: string,
+  category: string
+): Promise<Interview> {
+  const res = await fetch(`${API}/api/interviews/${interviewId}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ category }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? 'Failed to import calendar event');
-  }
-  return res.json();
+  return (await checkOk(res, 'Failed to update category')).json();
+}
+
+// Dismisses a calendar-discovered interview without touching its real
+// calendar event - what the "x" button does for anything Dayline doesn't own.
+export async function hideInterview(interviewId: string): Promise<void> {
+  await deleteInterview(interviewId);
+}
+
+export async function getHiddenInterviews(): Promise<Interview[]> {
+  const res = await fetch(`${API}/api/interviews/hidden`, { cache: 'no-store' });
+  return (await checkOk(res, 'Failed to load hidden interviews')).json();
+}
+
+export async function unhideInterview(interviewId: string): Promise<Interview> {
+  const res = await fetch(`${API}/api/interviews/${interviewId}/unhide`, { method: 'POST' });
+  return (await checkOk(res, 'Failed to unhide interview')).json();
 }
 
 export async function getApplications(): Promise<Application[]> {

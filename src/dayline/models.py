@@ -212,6 +212,16 @@ class Interview:
     # Id of the synced Google Calendar event, if any (see
     # adapters/interview_calendar_sync.py). None means never synced.
     google_event_id: str | None = None
+    # True only if Dayline itself created google_event_id (via the
+    # `+ Interview` form while connected) - False for one auto-discovered
+    # from an existing calendar event, which Dayline must never delete.
+    # Decides what deleting this interview actually does (api/main.py).
+    google_event_owned: bool = False
+    # Dismissed from the tracked list without touching the calendar event -
+    # the "filter" for a calendar-discovered false positive (a personal call,
+    # a duplicate entry). Excluded from list_upcoming(); calendar discovery
+    # skips a hidden interview's event so it doesn't reappear.
+    hidden: bool = False
 
 
 @dataclass(slots=True, frozen=True)

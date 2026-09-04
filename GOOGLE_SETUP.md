@@ -37,17 +37,25 @@ cal = GoogleCalendarClient()          # opens the consent flow on first use
 Both `credentials.json` and `token.json` are secrets - keep them out of git
 (they should be gitignored).
 
-## 4. Interview and task sync (live today)
+## 4. Interviews auto-discovered, tasks pushed (live today)
 
 Once steps 1-3 above are done, open the app's Interviews tab and click
 **Connect Google Calendar** - it runs the OAuth consent flow (steps 3 above
 happen in a browser window the backend opens) and writes `token.json`. From
 then on:
 
-- Every interview you create pushes to your real Google Calendar
-  automatically, and deleting an interview removes its calendar event too.
-  Use **Sync interviews now** to backfill anything created before you
-  connected. (`adapters/interview_calendar_sync.py`.)
+- **The calendar is the source of truth for interviews - there's no import
+  step.** Every event on your calendar automatically shows up as a tracked
+  interview (company guessed from the title, category defaulted to your
+  current top-ranked prep category - both editable in place). Moving an
+  interview's time on Google Calendar is picked up automatically the next
+  time the tab loads - that's the entire reschedule mechanism, no edit
+  screen needed. A false positive (a personal call, a duplicate entry) can
+  be dismissed with the "x" button without ever touching the real event -
+  it just won't be tracked in Dayline anymore, and it's reversible from the
+  "Hidden" section. An interview you create with `+ Interview` while
+  connected pushes a new event to your calendar and *that* one Dayline will
+  fully delete if you remove it, since it made it.
 - Every time the day's plan is computed - page load, day navigation, task
   edits, or the chat assistant reallocating time and you applying its
   proposal - today's planned task blocks are also pushed to your real
@@ -56,11 +64,11 @@ then on:
   This is a one-way, best-effort mirror: it never blocks or fails a plan
   request if Google is briefly unreachable.
 
-Both are wired into `api/main.py`'s `/api/calendar/*` and `/api/plan`
-endpoints. Neither changes what the day-scheduling calendar below reads busy
-time from or plans against - the planner itself keeps using the fast,
-reliable in-memory calendar; only its already-computed result gets mirrored
-out.
+Both are wired into `api/main.py`'s `/api/calendar/*` and `/api/interviews`/
+`/api/plan` endpoints. Neither changes what the day-scheduling calendar below
+reads busy time from or plans against - the planner itself keeps using the
+fast, reliable in-memory calendar; only interviews and already-computed plan
+results are mirrored to/from the real one.
 
 ## 5. Using the real calendar as the planner's busy-time source (still deferred)
 
