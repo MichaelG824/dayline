@@ -206,9 +206,20 @@ def _parse_dt(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
     except ValueError:
         return None
+    # The planning core is naive-local throughout (TimeSlot arithmetic
+    # compares raw wall-clock digits with no timezone conversion anywhere -
+    # see AGENTS.md), but fixed_time/due_date live in a Postgres timestamptz
+    # column, which always round-trips as timezone-aware. Nothing in this
+    # path ever performs a real timezone conversion (unlike the interview
+    # scheduling fix, which does): both write and read treat the digits as
+    # local time verbatim, so stripping the tzinfo Postgres adds is the
+    # correct inverse of writing a naive string in the first place - not
+    # stripping it crashes any TimeSlot comparison with "can't compare
+    # offset-naive and offset-aware datetimes".
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
 def _parse_date(value: Any) -> date | None:
