@@ -66,7 +66,11 @@ from dayline.models import (  # noqa: E402
     Weekday,
     Window,
 )
-from dayline.scheduler.run import AGENT_MARKER, run_daily_plan  # noqa: E402
+from dayline.scheduler.run import (  # noqa: E402
+    AGENT_MARKER,
+    run_daily_plan,
+    sync_plan_to_calendar,
+)
 
 app = FastAPI(title="Dayline API")
 
@@ -229,6 +233,12 @@ def plan_day(day: date) -> dict[str, Any]:
     calendar = _calendar(day)
     plan = run_daily_plan(day, _task_source, calendar, interview_source=_interview_source)
     agent_blocks = [e for e in calendar.list_events(day) if e.title.startswith(AGENT_MARKER)]
+    if _google_calendar is not None:
+        # Best-effort mirror of today's blocks to the real calendar - planning
+        # itself stays on the fast, reliable in-memory calendar above, so a
+        # Google hiccup here must never break viewing or editing tasks.
+        with contextlib.suppress(Exception):
+            sync_plan_to_calendar(_google_calendar, day, plan)
     return {
         "day": day.isoformat(),
         **_plan_json(plan, _task_source),
@@ -454,7 +464,10 @@ def calendar_agenda() -> dict[str, Any]:
     """Chronological view of what's coming up: every tracked interview (local
     data, shown regardless of connection) plus - if connected - every other
     Google Calendar event in the same window. A synced interview's own
-    calendar event is skipped from the Google side so it isn't shown twice."""
+    calendar event is skipped from the Google side so it isn't shown twice,
+    and marker-tagged task blocks (see sync_plan_to_calendar) are skipped too
+    since they're Dayline's own writes, not external commitments - that day's
+    tasks are already visible in the Tasks tab."""
     today = date.today()
     end_day = today + timedelta(days=AGENDA_WINDOW_DAYS)
 
@@ -486,7 +499,7 @@ def calendar_agenda() -> dict[str, Any]:
 
     if _google_calendar is not None:
         for event in _google_calendar.list_events_range(today, end_day):
-            if event.event_id in synced_event_ids:
+            if event.event_id in synced_event_ids or event.title.startswith(AGENT_MARKER):
                 continue
             items.append(
                 {

@@ -21,7 +21,17 @@ from datetime import date, datetime, time
 from dayline.adapters.calendar import CalendarClient
 from dayline.adapters.interview_source import InterviewSource
 from dayline.adapters.task_source import TaskSource
-from dayline.models import Interview, Plan, Priority, Recurrence, Status, Task, TimeSlot, Weekday
+from dayline.models import (
+    Interview,
+    Plan,
+    Priority,
+    Recurrence,
+    ScheduledBlock,
+    Status,
+    Task,
+    TimeSlot,
+    Weekday,
+)
 from dayline.planner.core import build_plan
 
 # Stable marker prefixed onto every agent-created calendar block title. This is
@@ -63,9 +73,7 @@ def run_daily_plan(
     """
     # 1. Reconcile: clear our own prior blocks for the day first, so busy time
     #    below reflects only events we must plan *around*, and re-runs don't stack.
-    for event in calendar.list_events(day):
-        if event.title.startswith(marker):
-            calendar.delete_event(event.event_id)
+    _delete_marker_blocks(calendar, day, marker)
 
     # 2. Read the world after reconciliation.
     busy = calendar.list_busy(day)
@@ -78,13 +86,45 @@ def run_daily_plan(
     plan = build_plan(open_tasks, free, day)
 
     # 4. Write-back: calendar blocks (marker-tagged) + task status/time.
+    _write_blocks(calendar, plan.blocks, marker)
     for block in plan.blocks:
-        calendar.create_block(f"{marker}{block.title}", block.start, block.end)
         task_source.update_task(
             block.task_id, status=Status.SCHEDULED, scheduled_time=block.start
         )
 
     return plan
+
+
+def _delete_marker_blocks(calendar: CalendarClient, day: date, marker: str) -> None:
+    """Delete every marker-tagged block on ``day`` - the idempotency half of
+    the reconciliation, reused by both the in-memory scheduling calendar and
+    :func:`sync_plan_to_calendar`'s push to a real calendar."""
+    for event in calendar.list_events(day):
+        if event.title.startswith(marker):
+            calendar.delete_event(event.event_id)
+
+
+def _write_blocks(
+    calendar: CalendarClient, blocks: list[ScheduledBlock], marker: str
+) -> None:
+    """Create one marker-tagged calendar block per placed block."""
+    for block in blocks:
+        calendar.create_block(f"{marker}{block.title}", block.start, block.end)
+
+
+def sync_plan_to_calendar(
+    calendar: CalendarClient, day: date, plan: Plan, marker: str = AGENT_MARKER
+) -> None:
+    """Push an already-computed plan's blocks to ``calendar`` (delete prior
+    marker-tagged blocks for ``day``, then create fresh ones) - the same
+    idempotent reconciliation :func:`run_daily_plan` does internally, exposed
+    standalone so a *second*, real calendar can mirror the plan without being
+    the calendar :func:`run_daily_plan` itself reads busy time from or plans
+    against. Intended for a best-effort push once planning (against the fast,
+    reliable in-memory calendar) has already completed - see ``api/main.py``.
+    """
+    _delete_marker_blocks(calendar, day, marker)
+    _write_blocks(calendar, plan.blocks, marker)
 
 
 def is_due(recurs: Recurrence, recur_day: Weekday | None, day: date) -> bool:

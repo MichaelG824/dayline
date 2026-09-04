@@ -12,7 +12,7 @@ from dayline.adapters.calendar import CalendarEvent, InMemoryCalendar
 from dayline.adapters.interview_source import InMemoryInterviewSource
 from dayline.adapters.task_source import InMemoryTaskSource
 from dayline.models import Category, Interview, InterviewCategory, Priority, Status
-from dayline.scheduler.run import AGENT_MARKER, run_daily_plan
+from dayline.scheduler.run import AGENT_MARKER, run_daily_plan, sync_plan_to_calendar
 from tests.fixtures import DAY, at, task
 
 
@@ -150,6 +150,46 @@ def test_interview_proximity_bumps_priority_to_win_scarce_slot() -> None:
 
     assert [b.task_id for b in plan.blocks] == ["near"]
     assert plan.unplaced and plan.unplaced[0].id == "far"
+
+
+def test_sync_plan_to_calendar_pushes_marker_blocks_to_a_second_calendar() -> None:
+    # Plan against the normal in-memory calendar, then mirror the result to a
+    # separate "real" calendar - the standalone push api/main.py uses for
+    # Google Calendar, independent of what run_daily_plan itself planned
+    # against.
+    source, calendar = _scenario()
+    plan = run_daily_plan(DAY, source, calendar)
+
+    real_calendar = InMemoryCalendar()
+    sync_plan_to_calendar(real_calendar, DAY, plan)
+
+    assert len(_agent_blocks(real_calendar)) == len(plan.blocks)
+
+
+def test_sync_plan_to_calendar_is_idempotent() -> None:
+    source, calendar = _scenario()
+    plan = run_daily_plan(DAY, source, calendar)
+    real_calendar = InMemoryCalendar()
+
+    sync_plan_to_calendar(real_calendar, DAY, plan)
+    first_count = len(_agent_blocks(real_calendar))
+    sync_plan_to_calendar(real_calendar, DAY, plan)
+    second_count = len(_agent_blocks(real_calendar))
+
+    assert second_count == first_count == len(plan.blocks)
+
+
+def test_sync_plan_to_calendar_leaves_non_marker_events_alone() -> None:
+    source, calendar = _scenario()
+    plan = run_daily_plan(DAY, source, calendar)
+    real_calendar = InMemoryCalendar(
+        [CalendarEvent("recruiter-call", "Recruiter call", at(13, 0), at(13, 30))]
+    )
+
+    sync_plan_to_calendar(real_calendar, DAY, plan)
+
+    titles = [e.title for e in real_calendar.list_events(DAY)]
+    assert "Recruiter call" in titles
 
 
 def test_no_interview_source_means_no_priority_bump() -> None:

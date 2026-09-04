@@ -1,7 +1,8 @@
 # Google Calendar setup
 
 `GoogleCalendarClient` talks to your real Google Calendar - today it powers
-interview sync (section 4); writing the planner's own time blocks there is a
+interview sync and a best-effort push of your planned task blocks (section
+4); using the real calendar as the planner's own *busy-time source* is a
 separate, still-deferred step (section 5). Either way it needs the same
 one-time OAuth setup below (this is the part only you can do).
 
@@ -36,27 +37,40 @@ cal = GoogleCalendarClient()          # opens the consent flow on first use
 Both `credentials.json` and `token.json` are secrets - keep them out of git
 (they should be gitignored).
 
-## 4. Interview sync (live today)
+## 4. Interview and task sync (live today)
 
 Once steps 1-3 above are done, open the app's Calendar tab and click
 **Connect Google Calendar** - it runs the OAuth consent flow (steps 3 above
 happen in a browser window the backend opens) and writes `token.json`. From
-then on every interview you create pushes to your real Google Calendar
-automatically, and deleting an interview removes its calendar event too. Use
-**Sync interviews now** to backfill anything created before you connected.
+then on:
 
-This is a one-way, interview-only sync
-(`adapters/interview_calendar_sync.py`, wired into `api/main.py`'s
-`/api/calendar/*` endpoints) - it does not touch the day-scheduling calendar
-below.
+- Every interview you create pushes to your real Google Calendar
+  automatically, and deleting an interview removes its calendar event too.
+  Use **Sync interviews now** to backfill anything created before you
+  connected. (`adapters/interview_calendar_sync.py`.)
+- Every time the day's plan is computed - page load, day navigation, task
+  edits, or the chat assistant reallocating time and you applying its
+  proposal - today's planned task blocks are also pushed to your real
+  calendar as `[dayline] <task>` events, reconciled the same idempotent way
+  the in-memory scheduling calendar already is (`scheduler.run.sync_plan_to_calendar`).
+  This is a one-way, best-effort mirror: it never blocks or fails a plan
+  request if Google is briefly unreachable.
 
-## 5. Scheduler wiring (still deferred)
+Both are wired into `api/main.py`'s `/api/calendar/*` and `/api/plan`
+endpoints. Neither changes what the day-scheduling calendar below reads busy
+time from or plans against - the planner itself keeps using the fast,
+reliable in-memory calendar; only its already-computed result gets mirrored
+out.
+
+## 5. Using the real calendar as the planner's busy-time source (still deferred)
 
 The day-scheduling calendar (`api/main.py`'s `_calendar()`) still constructs
-`InMemoryCalendar` per day - writing the *planner's* time-blocked plan to your
-real calendar is a separate, bigger change (every `POST /api/plan` call would
-become network-dependent) and remains manual/deferred. Swap it in yourself if
-you want it:
+`InMemoryCalendar` per day - having the *planner itself* read busy time from
+and plan directly against your real calendar (rather than mirroring an
+already-computed plan to it, as section 4 does) is a separate, bigger change:
+every `POST /api/plan` call would become network-dependent, so any Google
+hiccup would break viewing or editing tasks even though that has nothing to
+do with Google. Remains manual/deferred. Swap it in yourself if you want it:
 
 ```python
 from dayline.adapters.task_source import SupabaseTaskSource
