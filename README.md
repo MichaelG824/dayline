@@ -1,61 +1,80 @@
-# day-planner
+# dayline
 
-A personal planning agent that turns a task list into a **time-blocked daily plan** - centered on job-search prep (behavioral, AI-coding, Leetcode, system design) with everyday errands slotted underneath at lower priority.
+A personal planning agent that turns a task list into a **time-blocked daily plan** - centered on job-search interview prep (AI coding, behavioral, system design, Leetcode) with everyday errands slotted underneath at lower priority.
 
-This repository is the **first increment**: it scaffolds the whole project and implements everything that needs *no external credentials*, running end to end on in-memory fakes.
-Real Notion (via a hand-coded MCP server) and Google Calendar wiring are deferred to a later task.
+Tasks, applications, and upcoming interviews persist in Supabase.
+The calendar is still an in-memory fake (Google Calendar wiring is deferred - see `GOOGLE_SETUP.md`).
+A chat panel lets you reallocate time in plain language; it always proposes changes for your approval before anything is applied.
 
 ## Architecture
 
-Two triggers today are planned (a morning cron and this Streamlit dashboard), and a chat surface later - all sit on top of **one** deterministic planning core:
+One deterministic planning core sits underneath the FastAPI + Next.js dashboard:
 
 ```
-   morning cron  ─┐
-   Streamlit UI  ─┼─▶  build_plan()  ──▶  Plan (blocks + unplaced + brief)
-   chat (later)  ─┘        ▲                       │
-                           │                       ▼ write-back
-              TaskSource (Protocol)        CalendarClient (Protocol)
-                ├ InMemoryTaskSource         ├ InMemoryCalendar     (run today)
-                └ NotionTaskSource (later)    └ GoogleCalendarClient (later)
+   FastAPI + Next.js ──▶  build_plan()  ──▶  Plan (blocks + unplaced + brief)
+                              ▲                       │
+                              │                       ▼ write-back
+              TaskSource (Protocol)         CalendarClient (Protocol)
+                ├ InMemoryTaskSource (tests)   └ InMemoryCalendar (run today;
+                └ SupabaseTaskSource (wired,       Google Calendar deferred)
+                    the real backend)
 ```
 
-The core and scheduler depend **only** on the adapter Protocols, never a concrete Notion/Google class, so the real adapters drop in unchanged.
+`ApplicationSource` and `InterviewSource` follow the same pattern (`InMemory*` for tests, `Supabase*` as the real backend).
+The FastAPI layer (`src/dayline/api/main.py`) is a thin JSON surface over the same core: it calls `run_daily_plan`, resolves category-priority defaults and interview-proximity bumps *before* the pure core ever sees a task list, and serializes the result for the Next.js frontend (`web/`) to fetch and render.
+No scheduling logic lives in either layer.
+
+The core and scheduler depend **only** on the adapter Protocols, never a concrete Supabase/Google class, so a different real adapter can drop in unchanged.
 
 ## Directory layout
 
 ```
-day-planner/
+dayline/
   pyproject.toml
   README.md
+  .env.example              # SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY
   .gitignore
-  src/day_planner/
-    models.py               # Task, TimeSlot, ScheduledBlock, Plan + enums
+  src/dayline/
+    models.py               # Task, Application, Interview, TimeSlot, ScheduledBlock, Plan + enums
     planner/core.py         # build_plan(tasks, free_slots, day) - pure & deterministic
     adapters/
-      task_source.py        # TaskSource Protocol + InMemoryTaskSource fake (+ deferred NotionTaskSource)
-      calendar.py           # CalendarClient Protocol + InMemoryCalendar fake (+ deferred GoogleCalendarClient)
-    scheduler/run.py        # run_daily_plan(...) - wiring + idempotent write-back
-    ui/streamlit_app.py     # Streamlit dashboard - thin surface over the core
-  mcp_server/
-    README.md               # RESERVED for the captain's hand-coded Notion MCP server (contract only)
+      task_source.py        # TaskSource Protocol + InMemoryTaskSource + SupabaseTaskSource
+      application_source.py # ApplicationSource Protocol + InMemory/Supabase implementations
+      interview_source.py   # InterviewSource Protocol + InMemory/Supabase implementations
+      category_weights.py   # category -> default-priority mapping (plain functions, not a Protocol)
+      calendar.py            # CalendarClient Protocol + InMemoryCalendar (+ deferred GoogleCalendarClient)
+      supabase_client.py     # shared Supabase client construction
+    scheduler/run.py        # run_daily_plan(...) - wiring, idempotent write-back, interview-proximity bump
+    api/
+      main.py                # FastAPI JSON surface - thin layer over the core
+      chat.py                 # LLM propose/confirm chat (Anthropic SDK, no MCP)
+  web/                       # Next.js dashboard - fetches api/main.py, renders
+  supabase/
+    schema.sql               # base schema
+    migrations/              # 002_dayline_features.sql, 003_seed_category_weights.sql (run in order)
   tests/
     test_planner_core.py    # every planning-core rule
-    test_scheduler_run.py   # end-to-end + idempotency against the fakes
+    test_scheduler_run.py   # end-to-end + idempotency + interview-proximity bump
     fixtures.py
 ```
 
 ## Planning rules (in `planner/core.py`)
 
-`build_plan(tasks, free_slots, day)` is a pure, deterministic function (no I/O):
+`build_plan(tasks, free_slots, day)` is a pure, deterministic function (no I/O, no Supabase, no category-weight resolution):
 
 1. **Anchor** every `fixed_time` task at its time; it never overlaps a busy event or another anchored task (a collision is reported, not overlapped).
 2. **Pack** the rest into free slots by **priority** (P0 first), honoring `preferred_window` when a fitting slot exists there, then best duration fit.
-3. Job-search **prep** categories (behavioral, AI coding, leetcode, system design) outrank `Errand`/`Other` on priority ties.
+3. Job-search **prep** categories (the two AI-coding variants, behavioral, system design, Leetcode) outrank `Errand`/`Other` on priority ties.
 4. Placed blocks never overlap busy events or each other (zero collisions).
 5. Tasks that don't fit are returned in `unplaced` (never dropped).
 6. A short human-readable `brief` lists the ordered blocks and what didn't fit.
 
-**Idempotency** (in `scheduler/run.py`): every agent-created calendar block is titled with a stable `[day-planner] ` marker.
+Two things happen *before* a task list reaches `build_plan()`, never inside it:
+
+- **Category focus weighting** - a new task's default `Priority` is resolved from the `category_weights` table (`adapters/category_weights.py`) when one isn't given explicitly; re-ranking the table alone never touches existing tasks.
+- **Interview-proximity priority bump** - a task linked to an interview within 3 days gets its *effective* priority bumped one level for that planning run only (never persisted), so prep work naturally wins scarce time as the interview approaches.
+
+**Idempotency** (in `scheduler/run.py`): every agent-created calendar block is titled with a stable `[dayline] ` marker.
 Each run deletes its own prior blocks for the day before re-planning, so re-running reconciles to the same plan with no duplicates.
 
 ## Setup
@@ -65,54 +84,65 @@ Requires **Python 3.11+**.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'      # core + streamlit + pytest/ruff/mypy
+pip install -e '.[dev]'      # core + fastapi/uvicorn/supabase/anthropic + pytest/ruff/mypy
+cp .env.example .env         # fill in SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY
 ```
 
-The planning core and adapter interfaces are stdlib-only; `streamlit` is the one runtime dependency (for the dashboard).
-The deferred integrations live behind optional extras (`.[notion]`, `.[google]`) and are **not** needed to build or test a plan.
+The planning core and adapter Protocols are stdlib-only and need no credentials to build or test.
+The API (`api/main.py`) does need `.env` populated, since it constructs the Supabase and Anthropic clients at import time.
+The `google` extra backs the deferred `GoogleCalendarClient` (see `GOOGLE_SETUP.md`) and is not needed for anything else.
+
+### Supabase setup
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. In the SQL Editor, run `supabase/schema.sql` in its own query.
+3. Then run `supabase/migrations/002_dayline_features.sql` in a separate query.
+4. Then run `supabase/migrations/003_seed_category_weights.sql` in a third, separate query.
+
+Steps 3 and 4 must be separate runs - Postgres refuses to let a newly added enum value be used in the same transaction that added it, so combining them fails with `unsafe use of new value`.
+
+Copy the **Project URL** and the **secret key** (Settings → API Keys; not the publishable key - this backend needs to bypass row-level security, which only the secret key can do) into `.env`.
 
 ## Run the tests
 
 ```bash
-pytest          # unit tests for every core rule + end-to-end idempotency
+pytest          # unit tests for every core rule + end-to-end idempotency + interview-proximity bump
 ruff check .    # lint
 mypy            # type-check (config in pyproject.toml)
 ```
 
 ## Sample end-to-end run (against the fakes)
 
-Stands in for the future morning cron - no network, no credentials:
+Stands in for a future morning cron - no network, no credentials:
 
 ```bash
-python -m day_planner.scheduler.run
+python -m dayline.scheduler.run
 # or, after `pip install -e .`:
-day-planner
+dayline
 ```
 
 It seeds a realistic scenario (a fixed Leetcode contest, prep tasks, an errand, and a pre-existing "Team standup" event), runs the pipeline, and prints the brief.
 
-## Run the Streamlit dashboard
+## Run the dashboard (FastAPI + Next.js)
+
+Two processes, in separate terminals:
 
 ```bash
-streamlit run src/day_planner/ui/streamlit_app.py
+# Terminal 1 - API (reads .env for Supabase + Anthropic credentials)
+uvicorn dayline.api.main:app --reload --port 8000
+
+# Terminal 2 - UI
+cd web
+npm install   # first time only
+npm run dev
 ```
 
-The dashboard shows today's date and a day picker, runs the scheduler and renders the plan (ordered blocks with times), the `unplaced` list, and the `brief`, displays the current task list from the `TaskSource`, and offers a **"Re-plan"** button that re-runs the scheduler and re-renders - demonstrating idempotency (no duplicate blocks).
-All logic lives in the core/scheduler; the app only calls interfaces and renders.
+Open http://localhost:3000.
+The dashboard shows a day picker, the plan (ordered blocks with times), the `unplaced` list, and the `brief`; a task creation form; inline duration/priority editing on the task list; a category focus-ranking panel; an upcoming-interviews tracker; and a chat panel that proposes plan changes for your approval before applying them.
+"Re-plan" re-runs the scheduler and re-renders, demonstrating idempotency (no duplicate blocks).
+All logic lives in the core/scheduler/adapters; `api/main.py` only calls interfaces and serializes JSON, and `web/` only fetches and renders.
 
-## Setup checklist - what the captain must provide before the real adapters can be wired
+## Deferred / out of scope
 
-Everything above runs today on fakes. To wire the *real* integrations later:
-
-- [ ] **Notion integration** - create an internal integration and obtain a `NOTION_TOKEN`.
-- [ ] **Shared task database** - create the greenfield Tasks DB (epic Subtask 1) and note its `NOTION_DATABASE_ID`.
-- [ ] **Notion MCP server** - `mcp_server/` is **the captain's to build** (the deliberate MCP-learning piece). It exposes `list_tasks` / `get_task` / `update_task` over the Notion REST API and will back a `NotionTaskSource` that satisfies the existing `TaskSource` Protocol. See [`mcp_server/README.md`](mcp_server/README.md).
-- [ ] **Google Cloud OAuth client** for Calendar - a `credentials.json` (and stored `token.json`) to back the direct `GoogleCalendarClient`.
-
-Put secrets in `.env` / credential files (already git-ignored); never commit them.
-
-## Deferred / out of scope for this increment
-
-- Real Notion API calls and the MCP server implementation (`NotionTaskSource` raises `NotImplementedError`).
-- Real Google Calendar API / OAuth (`GoogleCalendarClient` raises `NotImplementedError`).
-- OS-level cron/launchd installation and the conversational surface.
+- `GoogleCalendarClient` is implemented (`adapters/calendar.py`) but not constructed in `api/main.py`, which still uses `InMemoryCalendar` - see `GOOGLE_SETUP.md` to wire it in.
+- OS-level cron/launchd installation for an unattended morning run.

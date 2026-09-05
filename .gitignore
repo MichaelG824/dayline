@@ -16,6 +16,8 @@ ENV/
 # Secrets / credentials (deferred adapters will need these - never commit them)
 .env
 .env.*
+!.env.example
+!mcp_server/.env.example
 *.secret
 secrets/
 credentials.json

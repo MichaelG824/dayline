@@ -1,0 +1,108 @@
+"""Tests for pushing interviews to a real calendar (Interview -> event).
+
+Uses :class:`InMemoryCalendar` as the ``CalendarClient`` fake - no real
+Google API or mocking needed, since the sync logic only depends on the
+Protocol surface.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from dayline.adapters.calendar import InMemoryCalendar
+from dayline.adapters.interview_calendar_sync import (
+    INTERVIEW_EVENT_DURATION_MIN,
+    guess_company_from_title,
+    interview_event_title,
+    sync_interview_event,
+)
+from dayline.models import Application, ApplicationStage, Interview, InterviewCategory
+
+APPLICATION = Application(
+    id="app-1", company="Acme", role="Backend Engineer", stage=ApplicationStage.ONSITE
+)
+
+
+def _interview(**overrides: object) -> Interview:
+    defaults: dict[str, object] = {
+        "id": "int-1",
+        "application_id": "app-1",
+        "category": InterviewCategory.SYSTEM_DESIGN,
+        "scheduled_at": datetime(2026, 9, 10, 14, 0),
+        "notes": None,
+        "google_event_id": None,
+    }
+    defaults.update(overrides)
+    return Interview(**defaults)  # type: ignore[arg-type]
+
+
+def test_title_includes_company_and_category() -> None:
+    title = interview_event_title(_interview(), APPLICATION)
+    assert title == "Interview: Acme (System Design)"
+
+
+def test_title_falls_back_when_application_missing() -> None:
+    title = interview_event_title(_interview(), None)
+    assert title == "Interview: Unknown company (System Design)"
+
+
+def test_sync_creates_event_when_none_exists() -> None:
+    calendar = InMemoryCalendar()
+    interview = _interview()
+
+    event_id = sync_interview_event(calendar, interview, APPLICATION)
+
+    events = calendar.list_events(interview.scheduled_at.date())
+    assert len(events) == 1
+    assert events[0].event_id == event_id
+    assert events[0].title == "Interview: Acme (System Design)"
+    assert events[0].start == interview.scheduled_at
+    assert events[0].end == interview.scheduled_at + timedelta(
+        minutes=INTERVIEW_EVENT_DURATION_MIN
+    )
+
+
+def test_resync_updates_existing_event_in_place() -> None:
+    # Never delete-and-recreate: the linked event may be one the app merely
+    # linked to (an imported interview owns its own pre-existing event), not
+    # one it created, so destroying and replacing it would be data loss.
+    calendar = InMemoryCalendar()
+    interview = _interview()
+
+    first_id = sync_interview_event(calendar, interview, APPLICATION)
+    interview.google_event_id = first_id
+    interview.category = InterviewCategory.BEHAVIORAL
+    second_id = sync_interview_event(calendar, interview, APPLICATION)
+
+    assert second_id == first_id
+    events = calendar.list_events(interview.scheduled_at.date())
+    assert len(events) == 1
+    assert events[0].event_id == first_id
+    assert events[0].title == "Interview: Acme (Behavioral)"
+
+
+def test_sync_never_deletes_the_linked_event() -> None:
+    calendar = InMemoryCalendar()
+    interview = _interview()
+    event_id = sync_interview_event(calendar, interview, APPLICATION)
+    interview.google_event_id = event_id
+
+    sync_interview_event(calendar, interview, APPLICATION)
+
+    assert calendar.list_events(interview.scheduled_at.date())
+
+
+def test_guess_company_strips_interview_with_prefix() -> None:
+    assert guess_company_from_title("Interview with GiveCampus") == "GiveCampus"
+
+
+def test_guess_company_strips_interview_suffix() -> None:
+    assert guess_company_from_title("amazon interview") == "amazon"
+
+
+def test_guess_company_keeps_multi_word_company() -> None:
+    assert guess_company_from_title("Interview with Thrive Market") == "Thrive Market"
+
+
+def test_guess_company_falls_back_to_title_when_nothing_left() -> None:
+    assert guess_company_from_title("Interview") == "Interview"

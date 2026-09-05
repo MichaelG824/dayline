@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "day-planner"
+name = "dayline"
 version = "0.1.0"
 description = "A personal planning agent that turns a task list into a time-blocked daily plan."
 readme = "README.md"
@@ -12,26 +12,28 @@ license = { text = "MIT" }
 authors = [{ name = "Michael Gee" }]
 
 # The planning core and adapter interfaces are deliberately dependency-free
-# (stdlib only). Streamlit is a real dependency for the interactive dashboard
-# (item 6); it is a thin presentation layer over the core.
+# (stdlib only). FastAPI/uvicorn back the interactive UI: a thin JSON layer
+# over the core, consumed by the Next.js frontend in web/. Supabase is the
+# real persistent backend for tasks/applications/interviews (see
+# supabase/schema.sql) - the service_role key is used server-side only, never
+# exposed to web/. Anthropic backs the chat propose/confirm feature.
 dependencies = [
-    "streamlit>=1.30",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "supabase>=2.0",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
-# Deferred integrations - NOT wired yet (no credentials exist). Listed here so
-# the eventual real adapters have a documented home. The tree stays importable
-# and testable without installing these.
-notion = [
-    # NotionTaskSource is an MCP *client* of the hand-coded server (see
-    # mcp_server/), so it needs the MCP SDK - not a direct Notion client. Notion
-    # access (and notion-client, if any) lives inside the server, not here.
-    "mcp>=2",
-]
+# Backs GoogleCalendarClient (adapters/calendar.py), live today for pushing
+# interviews to Google Calendar (see GOOGLE_SETUP.md, api/main.py's
+# /api/calendar/* endpoints). Needs credentials.json - the tree stays
+# importable and testable without installing this or completing that setup.
 google = [
-    # Backs the future direct Google Calendar CalendarClient.
     "google-api-python-client>=2.0",
     "google-auth-oauthlib>=1.0",
+    "google-auth-httplib2>=0.2",
 ]
 dev = [
     "pytest>=8.0",
@@ -40,10 +42,10 @@ dev = [
 ]
 
 [project.scripts]
-day-planner = "day_planner.scheduler.run:main"
+dayline = "dayline.scheduler.run:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/day_planner"]
+packages = ["src/dayline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -61,11 +63,17 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src"
-packages = ["day_planner"]
+packages = ["dayline"]
 strict = true
-# Streamlit (and its transitive numpy/pandas stubs) are third-party; don't type
-# them and don't follow into them - the UI is a thin, untyped presentation layer.
+
+# The google extra ships no type stubs/py.typed marker; GoogleCalendarClient
+# is the only caller and already narrows its surface to plain str/dict types.
 [[tool.mypy.overrides]]
-module = ["streamlit", "streamlit.*", "numpy", "numpy.*", "pandas", "pandas.*"]
+module = [
+    "googleapiclient.*",
+    "google_auth_oauthlib.*",
+    "google.*",
+    "httplib2.*",
+    "google_auth_httplib2.*",
+]
 ignore_missing_imports = true
-follow_imports = "skip"

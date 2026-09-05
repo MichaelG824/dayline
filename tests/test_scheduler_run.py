@@ -6,10 +6,13 @@ idempotent (running twice yields no duplicate blocks and the same result).
 
 from __future__ import annotations
 
-from day_planner.adapters.calendar import CalendarEvent, InMemoryCalendar
-from day_planner.adapters.task_source import InMemoryTaskSource
-from day_planner.models import Category, Priority, Status
-from day_planner.scheduler.run import AGENT_MARKER, run_daily_plan
+from datetime import timedelta
+
+from dayline.adapters.calendar import CalendarEvent, InMemoryCalendar
+from dayline.adapters.interview_source import InMemoryInterviewSource
+from dayline.adapters.task_source import InMemoryTaskSource
+from dayline.models import Category, Interview, InterviewCategory, Priority, Status
+from dayline.scheduler.run import AGENT_MARKER, run_daily_plan
 from tests.fixtures import DAY, at, task
 
 
@@ -91,3 +94,80 @@ def test_prep_placed_before_errand_end_to_end() -> None:
     # Errand (P2) comes after the P1 prep tasks in the timeline.
     assert order.index("errand") > order.index("behav")
     assert order.index("errand") > order.index("sysd")
+
+
+def test_planned_date_filters_one_shot_tasks_to_their_day() -> None:
+    tomorrow = DAY + timedelta(days=1)
+    source = InMemoryTaskSource(
+        [task("today-only", planned_date=DAY), task("tomorrow-only", planned_date=tomorrow)]
+    )
+    calendar = InMemoryCalendar()
+
+    today_plan = run_daily_plan(DAY, source, calendar)
+    assert {b.task_id for b in today_plan.blocks} == {"today-only"}
+
+    tomorrow_plan = run_daily_plan(tomorrow, source, calendar)
+    assert {b.task_id for b in tomorrow_plan.blocks} == {"tomorrow-only"}
+
+
+def test_planned_date_none_is_eligible_every_day() -> None:
+    source = InMemoryTaskSource([task("anytime", planned_date=None)])
+    calendar = InMemoryCalendar()
+
+    plan = run_daily_plan(DAY, source, calendar)
+    assert {b.task_id for b in plan.blocks} == {"anytime"}
+
+
+def test_interview_proximity_bumps_priority_to_win_scarce_slot() -> None:
+    # Only one 60-minute gap exists (21:00-22:00); two same-priority, same-
+    # duration prep tasks compete for it. Without any bump, the tightest-fit
+    # tiebreak falls back to name order ("far" < "near"), so "far" would win.
+    # Linking "near" to an interview 2 days out should bump it to P1 and let
+    # it win the slot instead.
+    source = InMemoryTaskSource(
+        [
+            task("near", name="near", category=Category.BEHAVIORAL, priority=Priority.P2,
+                 duration=60, interview_id="int-1"),
+            task("far", name="far", category=Category.BEHAVIORAL, priority=Priority.P2,
+                 duration=60),
+        ]
+    )
+    calendar = InMemoryCalendar(
+        [CalendarEvent("busy", "Busy all day", at(8, 0), at(21, 0))]
+    )
+    interviews = InMemoryInterviewSource(
+        [
+            Interview(
+                id="int-1",
+                application_id="app-1",
+                category=InterviewCategory.BEHAVIORAL,
+                scheduled_at=at(10, 0, day=DAY + timedelta(days=2)),
+            )
+        ]
+    )
+
+    plan = run_daily_plan(DAY, source, calendar, interview_source=interviews)
+
+    assert [b.task_id for b in plan.blocks] == ["near"]
+    assert plan.unplaced and plan.unplaced[0].id == "far"
+
+
+def test_no_interview_source_means_no_priority_bump() -> None:
+    # Same scenario as above, but without passing interview_source: "far"
+    # wins the scarce slot via plain name-order tiebreak, proving the bump is
+    # opt-in and existing callers are unaffected.
+    source = InMemoryTaskSource(
+        [
+            task("near", name="near", category=Category.BEHAVIORAL, priority=Priority.P2,
+                 duration=60, interview_id="int-1"),
+            task("far", name="far", category=Category.BEHAVIORAL, priority=Priority.P2,
+                 duration=60),
+        ]
+    )
+    calendar = InMemoryCalendar(
+        [CalendarEvent("busy", "Busy all day", at(8, 0), at(21, 0))]
+    )
+
+    plan = run_daily_plan(DAY, source, calendar)
+
+    assert [b.task_id for b in plan.blocks] == ["far"]
