@@ -73,8 +73,13 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
       onPlanUpdated(res.plan);
       setProposals([]);
       setExplanation(null);
-    } catch {
-      setError('Could not apply the selected changes.');
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? err.message : '';
+      setError(
+        detail && detail !== 'Failed to apply proposals'
+          ? detail
+          : 'Could not apply the selected changes.'
+      );
     } finally {
       setLoading(false);
     }

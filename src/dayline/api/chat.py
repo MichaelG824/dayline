@@ -39,6 +39,10 @@ propose_new_task as appropriate. Always include a short `reason` for each \
 proposal explaining your thinking, since these are shown to the user before \
 they decide whether to apply them.
 
+For propose_new_task, category MUST be exactly one of these strings: \
+"AI Coding - React/Python", "AI Coding - DSA", "Behavioral", "System Design", \
+"Leetcode", "Errand", "Other". Never invent labels like "Interview Prep".
+
 Do not call propose_* tools more than necessary - group related changes into \
 a single turn's proposals rather than trickling them out."""
 
@@ -68,12 +72,16 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "propose_new_task",
-        "description": "Propose creating a new task.",
+        "description": "Propose creating a new task; category must be an exact Category value.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "category": {"type": "string"},
+                "category": {
+                    "type": "string",
+                    "enum": [c.value for c in Category],
+                    "description": "Exact Category value, e.g. Behavioral not Interview Prep",
+                },
                 "est_duration_min": {"type": "integer"},
                 "planned_date": {"type": "string", "description": "YYYY-MM-DD or omit"},
                 "reason": {"type": "string"},
@@ -194,6 +202,44 @@ def run_chat_turn(
     return ChatTurnResult(explanation=explanation, proposals=proposals, history=messages)
 
 
+# Common LLM slips -> real Category values. Exact enum values still win first.
+_CATEGORY_ALIASES: dict[str, Category] = {
+    "interview prep": Category.BEHAVIORAL,
+    "behavioral interview": Category.BEHAVIORAL,
+    "behavioral prep": Category.BEHAVIORAL,
+    "system design prep": Category.SYSTEM_DESIGN,
+    "leetcode prep": Category.LEETCODE,
+    "dsa": Category.LEETCODE,
+    "ai coding": Category.AI_CODING_REACT_PYTHON,
+    "react": Category.AI_CODING_REACT_PYTHON,
+    "errands": Category.ERRAND,
+}
+
+
+def parse_category(raw: str) -> Category:
+    """Resolve a proposal category string to :class:`Category`.
+
+    Accepts exact enum values, case-insensitive matches, and a small alias map
+    for labels models invent (e.g. \"Interview Prep\" -> Behavioral).
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("category is required")
+    try:
+        return Category(text)
+    except ValueError:
+        pass
+    key = text.lower()
+    for cat in Category:
+        if cat.value.lower() == key or cat.name.lower() == key.replace(" ", "_").replace("-", "_"):
+            return cat
+    alias = _CATEGORY_ALIASES.get(key)
+    if alias is not None:
+        return alias
+    allowed = ", ".join(repr(c.value) for c in Category)
+    raise ValueError(f"Unknown category {raw!r}; use one of: {allowed}")
+
+
 def apply_proposal(task_source: TaskSource, proposal: dict[str, Any]) -> dict[str, Any]:
     """Apply one confirmed proposal via the existing TaskSource methods -
     never a separate code path from ordinary task creation/editing."""
@@ -207,7 +253,7 @@ def apply_proposal(task_source: TaskSource, proposal: dict[str, Any]) -> dict[st
         task = Task(
             id=str(uuid.uuid4()),
             name=proposal["name"],
-            category=Category(proposal["category"]),
+            category=parse_category(str(proposal["category"])),
             priority=Priority.P3,
             est_duration_min=proposal["est_duration_min"],
             planned_date=date.fromisoformat(proposal["planned_date"])
