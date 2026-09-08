@@ -137,7 +137,8 @@ npm install   # first time only
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000 (or :3003/:3004 if 3000 is taken).
+API CORS in `api/main.py` must include the Next origin you use, or browser calls like chat fail with "Could not reach the chat assistant."
 The dashboard shows a day picker, the plan (ordered blocks with times), the `unplaced` list, and the `brief`; a task creation form; inline duration/priority editing on the task list; a category focus-ranking panel; an upcoming-interviews tracker; and a chat panel that proposes plan changes for your approval before applying them.
 "Re-plan" re-runs the scheduler and re-renders, demonstrating idempotency (no duplicate blocks).
 All logic lives in the core/scheduler/adapters; `api/main.py` only calls interfaces and serializes JSON, and `web/` only fetches and renders.
