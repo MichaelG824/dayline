@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import date
+from typing import Any
+
 import pytest
 
 from dayline.adapters.task_source import InMemoryTaskSource
-from dayline.api.chat import apply_proposal, parse_category
+from dayline.api.chat import ChatDeps, apply_proposal, parse_category
 from dayline.models import Category, Priority
+
+
+def _deps(source: InMemoryTaskSource) -> ChatDeps:
+    empty: list[dict[str, Any]] = []
+    return ChatDeps(
+        task_source=source,
+        get_plan=lambda _d: {"day": date.today().isoformat(), "brief": "", "blocks": [], "unplaced": []},
+        list_interviews=lambda: empty,
+        get_category_ranks=lambda: empty,
+        get_preferences=lambda: {},
+        get_recent_outcomes=lambda _n: empty,
+    )
 
 
 def test_parse_category_exact_and_alias() -> None:
@@ -20,7 +35,7 @@ def test_parse_category_exact_and_alias() -> None:
 def test_apply_new_task_accepts_interview_prep_alias() -> None:
     src = InMemoryTaskSource()
     result = apply_proposal(
-        src,
+        _deps(src),
         {
             "type": "propose_new_task",
             "name": "Behavioral interview prep",

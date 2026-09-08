@@ -61,11 +61,25 @@ export interface Interview {
   hidden: boolean;
 }
 
+export type ProposalType =
+  | 'propose_duration_change'
+  | 'propose_new_task'
+  | 'propose_reprioritization'
+  | 'propose_preference_update'
+  | 'propose_category_rank_change';
+
 export interface Proposal {
-  type: 'propose_duration_change' | 'propose_new_task' | 'propose_reprioritization';
+  type: ProposalType;
   id: string;
   reason: string;
   [key: string]: unknown;
+}
+
+export interface PlannerPreferences {
+  peakHours: string | null;
+  categoryCaps: Record<string, number>;
+  standingRules: string[];
+  freeText: string | null;
 }
 
 export interface ChatResponse {
@@ -317,12 +331,29 @@ export async function sendChatMessage(
 
 export async function confirmProposals(
   day: string,
-  proposals: Proposal[]
+  proposals: Proposal[],
+  offered?: Proposal[]
 ): Promise<ChatConfirmResponse> {
   const res = await fetch(`${API}/api/chat/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ day, proposals }),
+    body: JSON.stringify({ day, proposals, offered }),
   });
   return (await checkOk(res, 'Failed to apply proposals')).json();
+}
+
+export async function getPreferences(): Promise<PlannerPreferences> {
+  const res = await fetch(`${API}/api/preferences`, { cache: 'no-store' });
+  return (await checkOk(res, 'Failed to load preferences')).json();
+}
+
+export async function putPreferences(
+  input: Partial<PlannerPreferences>
+): Promise<PlannerPreferences> {
+  const res = await fetch(`${API}/api/preferences`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return (await checkOk(res, 'Failed to save preferences')).json();
 }

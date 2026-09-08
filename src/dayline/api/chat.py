@@ -1,20 +1,23 @@
-"""LLM chat: propose changes to today's plan, never apply them directly.
+"""LLM chat: analysis-first planning assistant with propose/confirm mutations.
 
 Uses the Anthropic Python SDK with a manual tool-use loop (not the SDK's tool
-runner) because the propose/confirm split needs fine-grained control: the
-three ``propose_*`` tools are schema-only and never executed here - their
-``tool_use`` blocks are simply collected as data and returned to the caller.
-Only ``list_tasks`` (read-only) is executed during a chat turn. The actual
-mutation happens later, in :func:`confirm_proposals`, driven by the user's
-explicit selection - never automatically because Claude "called a tool".
+runner) because the propose/confirm split needs fine-grained control: every
+``propose_*`` tool is schema-only and never executed here - ``tool_use`` blocks
+are collected as data and returned to the caller. Only read tools
+(``list_tasks``, ``get_plan``, ``list_interviews``, ``get_category_ranks``,
+``get_preferences``, ``get_recent_outcomes``) auto-execute during a chat turn.
+Mutations happen later in :func:`apply_proposal`, driven by the user's explicit
+selection - never because Claude called a tool.
 
-Requires ``ANTHROPIC_API_KEY`` in the environment.
+Requires ``ANTHROPIC_API_KEY`` in the environment. Never calls ``build_plan``
+itself; plan snapshots come from a caller-supplied read callback.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
 
@@ -25,35 +28,88 @@ from dayline.models import Category, Priority, Task
 
 MODEL = "claude-opus-4-8"
 
-SYSTEM_PROMPT = """You are Dayline's planning assistant. You help the user reallocate \
-time in their day-plan by proposing changes - you never apply changes directly.
+SYSTEM_PROMPT = """You are Dayline's analysis-first planning assistant for interview prep.
 
-You have a `list_tasks` tool to inspect the current day's tasks (status, \
-duration, priority, category). Use it before proposing anything.
+Primary job: analyze today's plan, the backlog + upcoming interviews, and recent \
+outcomes/retros when data exists. Structure answers as:
+1) Situation - what the day/backlog/interviews look like
+2) Risks / gaps - overload, missing prep near interviews, preference mismatches
+3) Recommendation - advice the user can act on
 
-When the user asks you to reallocate time (e.g. "I'm done with work early, \
-give other tasks more time"), reason about which tasks would benefit from \
-more time (prefer BACKLOG tasks over DONE ones; prefer higher-priority prep \
-categories) and call propose_duration_change / propose_reprioritization / \
-propose_new_task as appropriate. Always include a short `reason` for each \
-proposal explaining your thinking, since these are shown to the user before \
-they decide whether to apply them.
+Call propose_* tools ONLY when:
+- the user explicitly asks for changes (reallocate, add tasks, reprioritize, \
+update preferences, nudge ranks/durations), OR
+- your analysis clearly needs a concrete fix the user can confirm (e.g. an \
+interview tomorrow with no matching prep on the plan).
+
+Analysis-only turns are normal and preferred when the user is asking "how am I \
+doing", "what's wrong with today", or wants a retro - return explanation with \
+zero proposals.
+
+When proposing:
+- Prefer interview-proximate prep over distant work.
+- Respect category focus ranks (rank 1 = highest focus).
+- Prefer BACKLOG tasks over DONE ones when reallocating time.
+- Do not invent P0 without a clear reason (imminent interview, user request, \
+or rank-1 focus gap).
+- Honor stored preferences (peak hours, category caps, standing rules like \
+"mornings = DSA").
+- For brain-dumps / inbox messages, emit multiple propose_new_task calls in \
+one turn rather than asking the user to send one task at a time.
+- Always include a short `reason` on each proposal (shown before confirm).
+- Group related changes into one turn's proposals; do not trickle them.
+
+Read tools (auto-executed): list_tasks, get_plan, list_interviews, \
+get_category_ranks, get_preferences, get_recent_outcomes.
+Use them before analyzing or proposing. Never claim you applied a change - \
+proposals await user confirmation."""
 
 For propose_new_task, category MUST be exactly one of these strings: \
 "AI Coding - React/Python", "AI Coding - DSA", "Behavioral", "System Design", \
-"Leetcode", "Errand", "Other". Never invent labels like "Interview Prep".
-
-Do not call propose_* tools more than necessary - group related changes into \
-a single turn's proposals rather than trickling them out."""
+"Leetcode", "Errand", "Other". Never invent labels like "Interview Prep"."""
 
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_tasks",
-        "description": "List current tasks for a given day, with status, duration, priority.",
+        "description": "List current tasks with status, duration, priority, category, links.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "day": {"type": "string", "description": "YYYY-MM-DD (optional filter hint)"}
+            },
+        },
+    },
+    {
+        "name": "get_plan",
+        "description": "Today's plan brief, scheduled blocks, and unplaced tasks.",
         "input_schema": {
             "type": "object",
             "properties": {"day": {"type": "string", "description": "YYYY-MM-DD"}},
-            "required": ["day"],
+        },
+    },
+    {
+        "name": "list_interviews",
+        "description": "Upcoming interviews with company/role/category and linkage fields.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_category_ranks",
+        "description": "Current prep-category focus order (rank 1 = highest).",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_preferences",
+        "description": "Stored planner preferences (peak hours, caps, standing rules).",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_recent_outcomes",
+        "description": "Recent accept/reject/completion/duration-override events for retros.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max events (default 20)"}
+            },
         },
     },
     {
@@ -72,7 +128,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "propose_new_task",
-        "description": "Propose creating a new task; category must be an exact Category value.",
+        "description": "Propose creating a new task (emit multiple for brain-dumps); category must be an exact Category value.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -84,6 +140,11 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "est_duration_min": {"type": "integer"},
                 "planned_date": {"type": "string", "description": "YYYY-MM-DD or omit"},
+                "priority": {
+                    "type": "string",
+                    "enum": ["P0", "P1", "P2", "P3"],
+                    "description": "Optional; omit to use category-rank default later",
+                },
                 "reason": {"type": "string"},
             },
             "required": ["name", "category", "est_duration_min", "reason"],
@@ -103,9 +164,86 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["task_id", "task_name", "new_priority", "reason"],
         },
     },
+    {
+        "name": "propose_preference_update",
+        "description": "Propose updating planner preferences (peak hours, caps, rules).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "peak_hours": {"type": "string", "description": "e.g. '9-12' or free text"},
+                "category_caps": {
+                    "type": "object",
+                    "additionalProperties": {"type": "integer"},
+                    "description": "category name -> max minutes/day",
+                },
+                "standing_rules": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "e.g. ['mornings = DSA']",
+                },
+                "free_text": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["reason"],
+        },
+    },
+    {
+        "name": "propose_category_rank_change",
+        "description": "Propose reordering prep-category focus ranks (still needs confirm).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ranks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "category": {"type": "string"},
+                            "rank": {"type": "integer"},
+                        },
+                        "required": ["category", "rank"],
+                    },
+                    "description": "Full or partial category->rank mapping (1=highest)",
+                },
+                "reason": {"type": "string"},
+            },
+            "required": ["ranks", "reason"],
+        },
+    },
 ]
 
-_PROPOSE_TOOL_NAMES = {"propose_duration_change", "propose_new_task", "propose_reprioritization"}
+_READ_TOOL_NAMES = {
+    "list_tasks",
+    "get_plan",
+    "list_interviews",
+    "get_category_ranks",
+    "get_preferences",
+    "get_recent_outcomes",
+}
+
+_PROPOSE_TOOL_NAMES = {
+    "propose_duration_change",
+    "propose_new_task",
+    "propose_reprioritization",
+    "propose_preference_update",
+    "propose_category_rank_change",
+}
+
+
+@dataclass
+class ChatDeps:
+    """Caller-supplied read/write hooks so chat stays free of Supabase imports."""
+
+    task_source: TaskSource
+    get_plan: Callable[[date], dict[str, Any]]
+    list_interviews: Callable[[], list[dict[str, Any]]]
+    get_category_ranks: Callable[[], list[dict[str, Any]]]
+    get_preferences: Callable[[], dict[str, Any]]
+    get_recent_outcomes: Callable[[int], list[dict[str, Any]]]
+    apply_preference_update: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    apply_category_ranks: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
+    # Optional snapshot injected into the system prompt every turn.
+    preferences_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,7 +253,7 @@ class ChatTurnResult:
     history: list[dict[str, Any]]
 
 
-def _list_tasks_tool_result(task_source: TaskSource, day: str) -> str:
+def _list_tasks_tool_result(task_source: TaskSource) -> str:
     tasks = task_source.list_tasks()
     return json.dumps(
         [
@@ -127,35 +265,66 @@ def _list_tasks_tool_result(task_source: TaskSource, day: str) -> str:
                 "status": t.status.value,
                 "estDurationMin": t.est_duration_min,
                 "plannedDate": t.planned_date.isoformat() if t.planned_date else None,
+                "applicationId": t.application_id,
+                "interviewId": t.interview_id,
             }
             for t in tasks
         ]
     )
 
 
+def _system_prompt(deps: ChatDeps) -> str:
+    prefs = deps.preferences_snapshot or deps.get_preferences()
+    prefs_block = json.dumps(prefs, indent=2)
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"Current planner preferences (authoritative; also available via get_preferences):\n"
+        f"{prefs_block}"
+    )
+
+
+def _execute_read_tool(name: str, tool_input: dict[str, Any], deps: ChatDeps, day: date) -> str:
+    if name == "list_tasks":
+        return _list_tasks_tool_result(deps.task_source)
+    if name == "get_plan":
+        day_arg = date.fromisoformat(str(tool_input["day"])) if tool_input.get("day") else day
+        return json.dumps(deps.get_plan(day_arg))
+    if name == "list_interviews":
+        return json.dumps(deps.list_interviews())
+    if name == "get_category_ranks":
+        return json.dumps(deps.get_category_ranks())
+    if name == "get_preferences":
+        return json.dumps(deps.get_preferences())
+    if name == "get_recent_outcomes":
+        limit = int(tool_input.get("limit") or 20)
+        return json.dumps(deps.get_recent_outcomes(limit))
+    return json.dumps({"error": f"Unknown read tool {name!r}"})
+
+
 def run_chat_turn(
     client: anthropic.Anthropic,
-    task_source: TaskSource,
+    deps: ChatDeps,
     day: date,
     message: str,
     history: list[dict[str, Any]] | None = None,
 ) -> ChatTurnResult:
-    """Run one chat turn: Claude may inspect tasks (auto-executed) and emit
-    proposals (never executed here). Returns Claude's explanation, the
-    collected proposals, and the updated history to round-trip on the next
-    call - the endpoint is stateless between HTTP requests, like the rest of
-    the API."""
+    """Run one chat turn: read tools auto-execute; propose tools are collected only.
+
+    Returns Claude's explanation, collected proposals (may be empty after pure
+    analysis), and updated history to round-trip on the next call.
+    """
     messages: list[dict[str, Any]] = list(history or [])
     messages.append({"role": "user", "content": message})
 
     proposals: list[dict[str, Any]] = []
     response = None
+    system = _system_prompt(deps)
 
     while True:
         response = client.messages.create(
             model=MODEL,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=system,
             tools=cast(Any, TOOLS),
             messages=cast(Any, messages),
         )
@@ -168,14 +337,13 @@ def run_chat_turn(
         tool_results: list[dict[str, Any]] = []
         stop_loop = False
         for tu in tool_uses:
-            if tu.name == "list_tasks":
-                day_arg = str(tu.input.get("day") or day.isoformat())
-                result = _list_tasks_tool_result(task_source, day_arg)
+            if tu.name in _READ_TOOL_NAMES:
+                result = _execute_read_tool(tu.name, dict(tu.input or {}), deps, day)
                 tool_results.append(
                     {"type": "tool_result", "tool_use_id": tu.id, "content": result}
                 )
             elif tu.name in _PROPOSE_TOOL_NAMES:
-                proposals.append({"type": tu.name, "id": tu.id, **tu.input})
+                proposals.append({"type": tu.name, "id": tu.id, **dict(tu.input or {})})
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -240,21 +408,29 @@ def parse_category(raw: str) -> Category:
     raise ValueError(f"Unknown category {raw!r}; use one of: {allowed}")
 
 
-def apply_proposal(task_source: TaskSource, proposal: dict[str, Any]) -> dict[str, Any]:
-    """Apply one confirmed proposal via the existing TaskSource methods -
-    never a separate code path from ordinary task creation/editing."""
+def apply_proposal(deps: ChatDeps, proposal: dict[str, Any]) -> dict[str, Any]:
+    """Apply one confirmed proposal via existing TaskSource / preference hooks.
+
+    Never a separate mutation path from ordinary task creation/editing.
+    """
     kind = proposal["type"]
+    task_source = deps.task_source
     if kind == "propose_duration_change":
         task_source.update_task(proposal["task_id"], est_duration_min=proposal["new_duration_min"])
         return {"type": kind, "task_id": proposal["task_id"], "result": "ok"}
     if kind == "propose_new_task":
         import uuid
 
+        priority = (
+            Priority[proposal["priority"]]
+            if proposal.get("priority") in {"P0", "P1", "P2", "P3"}
+            else Priority.P3
+        )
         task = Task(
             id=str(uuid.uuid4()),
             name=proposal["name"],
             category=parse_category(str(proposal["category"])),
-            priority=Priority.P3,
+            priority=priority,
             est_duration_min=proposal["est_duration_min"],
             planned_date=date.fromisoformat(proposal["planned_date"])
             if proposal.get("planned_date")
@@ -265,4 +441,23 @@ def apply_proposal(task_source: TaskSource, proposal: dict[str, Any]) -> dict[st
     if kind == "propose_reprioritization":
         task_source.update_task(proposal["task_id"], priority=Priority[proposal["new_priority"]])
         return {"type": kind, "task_id": proposal["task_id"], "result": "ok"}
+    if kind == "propose_preference_update":
+        if deps.apply_preference_update is None:
+            raise ValueError("Preference updates are not configured")
+        raw_patch: dict[str, Any] = {
+            "peakHours": proposal.get("peak_hours"),
+            "categoryCaps": proposal.get("category_caps"),
+            "standingRules": proposal.get("standing_rules"),
+            "freeText": proposal.get("free_text"),
+        }
+        # Drop keys the model omitted so patch merges cleanly.
+        patch = {k: v for k, v in raw_patch.items() if v is not None}
+        prefs_updated = deps.apply_preference_update(patch)
+        return {"type": kind, "result": "ok", "preferences": prefs_updated}
+    if kind == "propose_category_rank_change":
+        if deps.apply_category_ranks is None:
+            raise ValueError("Category rank updates are not configured")
+        ranks = list(proposal.get("ranks") or [])
+        ranks_updated = deps.apply_category_ranks(ranks)
+        return {"type": kind, "result": "ok", "ranks": ranks_updated}
     raise ValueError(f"Unknown proposal type {kind!r}")

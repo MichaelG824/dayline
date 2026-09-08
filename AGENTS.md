@@ -26,9 +26,15 @@ The day-scheduling calendar stays in-memory (`InMemoryCalendar`, day-keyed) and 
 
 The 5 prep categories (`AI_CODING_REACT_PYTHON`, `AI_CODING_DSA`, `BEHAVIORAL`, `SYSTEM_DESIGN`, `LEETCODE`) each have a default `Priority` stored in the `category_weights` Supabase table (`adapters/category_weights.py`). New tasks created without an explicit priority resolve it from this table; re-ranking the table alone never touches existing tasks - `POST /api/category-weights/apply` is the explicit, separate action that bulk-reprioritizes `BACKLOG` tasks only (never `SCHEDULED`/`DONE`).
 
-## LLM chat (propose/confirm)
+## LLM chat (analysis-first, propose/confirm)
 
-`api/chat.py` uses the Anthropic Python SDK directly (no MCP - the tool-calling loop and its execution live in the same FastAPI process, so there's no client/server boundary for MCP to bridge). `list_tasks` is the only auto-executed tool; `propose_duration_change`/`propose_new_task`/`propose_reprioritization` are schema-only - their `tool_use` blocks are collected as data and returned to the frontend, never executed during the chat turn itself. `POST /api/chat/confirm` is the only code path that actually mutates tasks, driven by the user's explicit selection.
+`api/chat.py` uses the Anthropic Python SDK directly (no MCP). The assistant is **analysis-first**: situation → risks/gaps → recommendation. It may stop at advice; `propose_*` tools fire only when the user asks for changes or analysis clearly needs a concrete fix. Response shape stays `{ explanation, proposals, history }` - **proposals may be empty**.
+
+**Read tools** (auto-executed each turn): `list_tasks`, `get_plan`, `list_interviews`, `get_category_ranks`, `get_preferences`, `get_recent_outcomes`. **Propose tools** (schema-only until confirm): `propose_duration_change`, `propose_new_task`, `propose_reprioritization`, `propose_preference_update`, `propose_category_rank_change`. `POST /api/chat/confirm` is the only mutation path (user multi-select); never auto-apply because Claude called a tool. LLM never enters `build_plan`.
+
+**Preferences** (`adapters/preferences.py`, table `planner_preferences` via `009_planner_preferences_outcomes.sql`): peak hours, category caps, standing rules, free text - injected into the system prompt every turn; also `GET/PUT /api/preferences`.
+
+**Outcomes** (`adapters/outcomes.py`, table `planner_outcomes`): lightweight accept/reject/completion/duration-override events for retros via `get_recent_outcomes`. Confirm logs accepts + rejects (`offered` minus applied); task PATCH logs completion/duration overrides best-effort. Nudges still require propose → confirm.
 
 ## Commands
 

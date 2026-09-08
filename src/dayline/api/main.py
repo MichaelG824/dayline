@@ -50,9 +50,21 @@ from dayline.adapters.interview_calendar_sync import (  # noqa: E402
     sync_interview_event,
 )
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
+from dayline.adapters.outcomes import (  # noqa: E402
+    OUTCOME_DURATION_OVERRIDE,
+    OUTCOME_PROPOSAL_ACCEPTED,
+    OUTCOME_PROPOSAL_REJECTED,
+    OUTCOME_TASK_COMPLETED,
+    list_recent_outcomes,
+    log_outcome,
+)  # outcome kinds used by chat confirm + task PATCH
+from dayline.adapters.preferences import (  # noqa: E402
+    get_preferences,
+    patch_preferences,
+)
 from dayline.adapters.supabase_client import get_supabase_client  # noqa: E402
 from dayline.adapters.task_source import SupabaseTaskSource  # noqa: E402
-from dayline.api.chat import apply_proposal, run_chat_turn  # noqa: E402
+from dayline.api.chat import ChatDeps, apply_proposal, run_chat_turn  # noqa: E402
 from dayline.models import (  # noqa: E402
     Application,
     ApplicationStage,
@@ -332,6 +344,7 @@ class TaskUpdateRequest(BaseModel):
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: str, body: TaskUpdateRequest) -> dict[str, Any]:
     try:
+        before = _task_source.get_task(task_id)
         updated = _task_source.update_task(
             task_id,
             name=body.name,
@@ -344,6 +357,25 @@ def update_task(task_id: str, body: TaskUpdateRequest) -> dict[str, Any]:
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"No task {task_id!r}") from exc
+
+    # Best-effort outcome log for retros (never blocks the edit).
+    with contextlib.suppress(Exception):
+        if body.estDurationMin is not None and body.estDurationMin != before.est_duration_min:
+            log_outcome(
+                _client,
+                OUTCOME_DURATION_OVERRIDE,
+                {
+                    "taskId": task_id,
+                    "fromMin": before.est_duration_min,
+                    "toMin": body.estDurationMin,
+                },
+            )
+        if body.status == Status.DONE.value and before.status != Status.DONE:
+            log_outcome(
+                _client,
+                OUTCOME_TASK_COMPLETED,
+                {"taskId": task_id, "name": updated.name, "category": updated.category.value},
+            )
     return _task_json(updated, _task_source)
 
 
@@ -620,6 +652,53 @@ def create_application(body: ApplicationCreateRequest) -> dict[str, Any]:
     return _application_json(created)
 
 
+def _chat_plan_snapshot(day: date) -> dict[str, Any]:
+    """Plan JSON for the get_plan chat tool - same path as POST /api/plan."""
+    return plan_day(day)
+
+
+def _chat_list_interviews() -> list[dict[str, Any]]:
+    _reconcile_calendar_interviews()
+    return [_interview_json(i) for i in _interview_source.list_upcoming()]
+
+
+def _chat_category_ranks() -> list[dict[str, Any]]:
+    ranks = get_category_ranks(_client)
+    return [{"category": c.value, "rank": ranks[c]} for c in PREP_CATEGORIES]
+
+
+def _chat_get_preferences() -> dict[str, Any]:
+    return get_preferences(_client).to_dict()
+
+
+def _chat_recent_outcomes(limit: int = 20) -> list[dict[str, Any]]:
+    return list_recent_outcomes(_client, limit=limit)
+
+
+def _chat_apply_preference_update(patch: dict[str, Any]) -> dict[str, Any]:
+    return patch_preferences(_client, patch).to_dict()
+
+
+def _chat_apply_category_ranks(ranks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mapping = {_parse_category(item["category"]): int(item["rank"]) for item in ranks}
+    set_category_ranks(_client, mapping)
+    return _chat_category_ranks()
+
+
+def _build_chat_deps() -> ChatDeps:
+    return ChatDeps(
+        task_source=_task_source,
+        get_plan=_chat_plan_snapshot,
+        list_interviews=_chat_list_interviews,
+        get_category_ranks=_chat_category_ranks,
+        get_preferences=_chat_get_preferences,
+        get_recent_outcomes=_chat_recent_outcomes,
+        apply_preference_update=_chat_apply_preference_update,
+        apply_category_ranks=_chat_apply_category_ranks,
+        preferences_snapshot=_chat_get_preferences(),
+    )
+
+
 class ChatRequest(BaseModel):
     day: str
     message: str
@@ -628,11 +707,11 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 def chat(body: ChatRequest) -> dict[str, Any]:
-    """Ask the assistant to reason about today's plan. Never applies changes
-    directly - see ``adapters/../api/chat.py`` for the propose/confirm split."""
+    """Analysis-first assistant. Never applies changes directly - see
+    ``api/chat.py`` for the propose/confirm split. Proposals may be empty."""
     result = run_chat_turn(
         _anthropic_client,
-        _task_source,
+        _build_chat_deps(),
         date.fromisoformat(body.day),
         body.message,
         history=body.history,
@@ -647,16 +726,76 @@ def chat(body: ChatRequest) -> dict[str, Any]:
 class ChatConfirmRequest(BaseModel):
     day: str
     proposals: list[dict[str, Any]]
+    # Full set offered in the turn; anything not in ``proposals`` is logged rejected.
+    offered: list[dict[str, Any]] | None = None
 
 
 @app.post("/api/chat/confirm")
 def chat_confirm(body: ChatConfirmRequest) -> dict[str, Any]:
-    """Apply the user-approved subset of a chat turn's proposals, then
-    re-plan the day so the frontend can reuse its existing plan rendering."""
+    """Apply the user-approved subset of a chat turn's proposals, log
+    accept/reject outcomes, then re-plan the day."""
+    deps = _build_chat_deps()
+    applied: list[dict[str, Any]] = []
     try:
-        applied = [apply_proposal(_task_source, p) for p in body.proposals]
+        for p in body.proposals:
+            result = apply_proposal(deps, p)
+            applied.append(result)
+            with contextlib.suppress(Exception):
+                log_outcome(
+                    _client,
+                    OUTCOME_PROPOSAL_ACCEPTED,
+                    {"proposalType": p.get("type"), "proposal": p, "result": result},
+                )
+                if p.get("type") == "propose_duration_change":
+                    log_outcome(
+                        _client,
+                        OUTCOME_DURATION_OVERRIDE,
+                        {
+                            "taskId": p.get("task_id"),
+                            "toMin": p.get("new_duration_min"),
+                            "via": "chat_confirm",
+                        },
+                    )
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    accepted_ids = {p.get("id") for p in body.proposals}
+    for p in body.offered or []:
+        if p.get("id") in accepted_ids:
+            continue
+        with contextlib.suppress(Exception):
+            log_outcome(
+                _client,
+                OUTCOME_PROPOSAL_REJECTED,
+                {"proposalType": p.get("type"), "proposal": p},
+            )
+
     day = date.fromisoformat(body.day)
     plan_response = plan_day(day)
     return {"applied": applied, "plan": plan_response}
+
+
+class PreferencesUpdateRequest(BaseModel):
+    peakHours: str | None = None
+    categoryCaps: dict[str, int] | None = None
+    standingRules: list[str] | None = None
+    freeText: str | None = None
+
+
+@app.get("/api/preferences")
+def preferences_get() -> dict[str, Any]:
+    """Current planner preferences (peak hours, caps, standing rules)."""
+    return get_preferences(_client).to_dict()
+
+
+@app.put("/api/preferences")
+def preferences_put(body: PreferencesUpdateRequest) -> dict[str, Any]:
+    """Replace/merge planner preferences from a minimal settings surface."""
+    patch = body.model_dump(exclude_unset=True)
+    return patch_preferences(_client, patch).to_dict()
+
+
+@app.get("/api/outcomes")
+def outcomes_list(limit: int = 20) -> list[dict[str, Any]]:
+    """Recent outcome events for retros / debugging."""
+    return list_recent_outcomes(_client, limit=max(1, min(limit, 100)))
