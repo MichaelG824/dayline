@@ -100,7 +100,16 @@ export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as con
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 async function checkOk(res: Response, message: string): Promise<Response> {
-  if (!res.ok) throw new Error(message);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === 'string') detail = body.detail;
+    } catch {
+      // non-JSON error body - keep the generic message
+    }
+    throw new Error(detail || message);
+  }
   return res;
 }
 

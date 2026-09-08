@@ -645,7 +645,10 @@ class ChatConfirmRequest(BaseModel):
 def chat_confirm(body: ChatConfirmRequest) -> dict[str, Any]:
     """Apply the user-approved subset of a chat turn's proposals, then
     re-plan the day so the frontend can reuse its existing plan rendering."""
-    applied = [apply_proposal(_task_source, p) for p in body.proposals]
+    try:
+        applied = [apply_proposal(_task_source, p) for p in body.proposals]
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     day = date.fromisoformat(body.day)
     plan_response = plan_day(day)
     return {"applied": applied, "plan": plan_response}
