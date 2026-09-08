@@ -13,12 +13,20 @@ import {
   planDay,
 } from '../lib/api';
 import { computeDayTasks } from '../lib/dayTasks';
+import { usePomodoro } from '../lib/usePomodoro';
 import { Sidebar } from './Sidebar';
 import { TasksTab } from './TasksTab';
 import { InterviewsTab } from './InterviewsTab';
 import { ChatTab } from './ChatTab';
+import { PomodoroTab } from './PomodoroTab';
 
-export type Tab = 'tasks' | 'interviews' | 'chat';
+export type Tab = 'tasks' | 'interviews' | 'chat' | 'pomodoro';
+
+function formatClock(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
 
 interface Props {
   initialDay: string;
@@ -52,6 +60,7 @@ export function AppShell({
   const [applications, setApplications] = useState(initialApplications);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pomodoro = usePomodoro();
 
   async function refreshDay(nextDay: string) {
     setLoading(true);
@@ -94,7 +103,7 @@ export function AppShell({
       <main className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 px-6 py-3">
           <nav className="flex gap-1">
-            {(['tasks', 'interviews', 'chat'] as Tab[]).map((t) => (
+            {(['tasks', 'interviews', 'chat', 'pomodoro'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -104,7 +113,16 @@ export function AppShell({
                     : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'
                 }`}
               >
-                {t}
+                {t === 'pomodoro' && pomodoro.isRunning ? (
+                  <span className="flex items-center gap-1.5">
+                    Pomodoro
+                    <span className="font-mono text-xs tabular-nums text-emerald-600 dark:text-emerald-400">
+                      {formatClock(pomodoro.secondsLeft)}
+                    </span>
+                  </span>
+                ) : (
+                  t
+                )}
               </button>
             ))}
           </nav>
@@ -138,6 +156,7 @@ export function AppShell({
               }}
             />
           )}
+          {tab === 'pomodoro' && <PomodoroTab {...pomodoro} />}
         </div>
       </main>
     </div>
