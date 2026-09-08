@@ -75,11 +75,19 @@ app = FastAPI(title="Dayline API")
 # looks for calendar events to track.
 INTERVIEW_DISCOVERY_WINDOW_DAYS = 30
 
-# The Next.js dev server runs on :3000; this API is single-user/local so an
-# open CORS policy scoped to that one origin is enough (see AGENTS.md).
+# Next.js often lands on :3000, :3003, or :3004 when ports are taken; list
+# common localhost/127.0.0.1 origins so browser fetch to /api/chat is not
+# CORS-blocked (single-user local API - see AGENTS.md).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3003",
+        "http://localhost:3004",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3003",
+        "http://127.0.0.1:3004",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
