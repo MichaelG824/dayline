@@ -9,19 +9,30 @@ interface Props {
 }
 
 const SUGGESTIONS = [
+  "How's my plan looking today?",
+  "What's at risk before my next interview?",
   "I'm done with work, redistribute time",
-  "How's my progress today?",
-  'Add 30 minutes to behavioral',
+  'Brain dump: leetcode 45m, behavioral stories 30m, system design notes 60m',
 ];
 
 function describeProposal(p: Proposal): string {
   switch (p.type) {
     case 'propose_duration_change':
-      return `Set "${p.task_name}" to ${p.new_duration_min} min - ${p.reason}`;
+      return `Set "${String(p.task_name)}" to ${String(p.new_duration_min)} min - ${p.reason}`;
     case 'propose_reprioritization':
-      return `Set "${p.task_name}" priority to ${p.new_priority} - ${p.reason}`;
+      return `Set "${String(p.task_name)}" priority to ${String(p.new_priority)} - ${p.reason}`;
     case 'propose_new_task':
-      return `Create "${p.name}" (${p.category}, ${p.est_duration_min} min) - ${p.reason}`;
+      return `Create "${String(p.name)}" (${String(p.category)}, ${String(p.est_duration_min)} min) - ${p.reason}`;
+    case 'propose_preference_update': {
+      const bits: string[] = [];
+      if (p.peak_hours) bits.push(`peak hours: ${String(p.peak_hours)}`);
+      if (p.standing_rules) bits.push(`rules: ${JSON.stringify(p.standing_rules)}`);
+      if (p.category_caps) bits.push(`caps: ${JSON.stringify(p.category_caps)}`);
+      if (p.free_text) bits.push(`note: ${String(p.free_text)}`);
+      return `Update preferences (${bits.join('; ') || 'patch'}) - ${p.reason}`;
+    }
+    case 'propose_category_rank_change':
+      return `Reorder category ranks ${JSON.stringify(p.ranks)} - ${p.reason}`;
     default:
       return p.reason;
   }
@@ -63,13 +74,21 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
     });
   }
 
+  function selectAll() {
+    setSelected(new Set(proposals.map((p) => p.id)));
+  }
+
+  function selectNone() {
+    setSelected(new Set());
+  }
+
   async function handleApply() {
     const chosen = proposals.filter((p) => selected.has(p.id));
     if (chosen.length === 0) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await confirmProposals(day, chosen);
+      const res = await confirmProposals(day, chosen, proposals);
       onPlanUpdated(res.plan);
       setProposals([]);
       setExplanation(null);
@@ -85,6 +104,27 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
     }
   }
 
+  async function handleDismiss() {
+    if (proposals.length === 0) {
+      setExplanation(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      // Confirm with empty selection so rejected proposals are logged.
+      const res = await confirmProposals(day, [], proposals);
+      onPlanUpdated(res.plan);
+      setProposals([]);
+      setExplanation(null);
+    } catch {
+      setProposals([]);
+      setExplanation(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full max-h-[calc(100vh-140px)]">
       <div className="flex-1 overflow-y-auto flex flex-col gap-4">
@@ -93,7 +133,10 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
             AI
           </div>
           <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4 text-sm text-zinc-900 dark:text-zinc-100">
-            <p className="mb-3">Hi! I can help redistribute time or adjust task allocations.</p>
+            <p className="mb-3">
+              I analyze your plan, backlog, interviews, and outcomes first. I only propose changes
+              when you ask or a concrete fix is clearly needed - nothing applies until you confirm.
+            </p>
             <p className="text-zinc-500 mb-1">Try:</p>
             <ul className="list-disc list-inside text-zinc-600 dark:text-zinc-400">
               {SUGGESTIONS.map((s) => (
@@ -109,11 +152,35 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
               AI
             </div>
             <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4 text-sm text-zinc-900 dark:text-zinc-100">
-              <p>{explanation}</p>
-              {proposals.length > 0 && (
+              <p className="whitespace-pre-wrap">{explanation}</p>
+              {proposals.length > 0 ? (
                 <div className="mt-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
+                      {proposals.length} proposal{proposals.length === 1 ? '' : 's'} - select to apply
+                    </p>
+                    <div className="flex gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={selectAll}
+                        className="text-indigo-600 dark:text-indigo-400 hover:underline"
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={selectNone}
+                        className="text-zinc-500 hover:underline"
+                      >
+                        None
+                      </button>
+                    </div>
+                  </div>
                   {proposals.map((p) => (
-                    <label key={p.id} className="flex items-start gap-2 text-zinc-700 dark:text-zinc-300">
+                    <label
+                      key={p.id}
+                      className="flex items-start gap-2 text-zinc-700 dark:text-zinc-300"
+                    >
                       <input
                         type="checkbox"
                         checked={selected.has(p.id)}
@@ -123,14 +190,27 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
                       <span>{describeProposal(p)}</span>
                     </label>
                   ))}
-                  <button
-                    onClick={handleApply}
-                    disabled={loading || selected.size === 0}
-                    className="self-start mt-2 px-4 py-2 text-sm rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-40"
-                  >
-                    Apply selected
-                  </button>
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      onClick={handleApply}
+                      disabled={loading || selected.size === 0}
+                      className="self-start px-4 py-2 text-sm rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-40"
+                    >
+                      Apply selected ({selected.size})
+                    </button>
+                    <button
+                      onClick={handleDismiss}
+                      disabled={loading}
+                      className="self-start px-4 py-2 text-sm rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-40"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 </div>
+              ) : (
+                <p className="mt-3 text-xs text-zinc-500">
+                  Analysis only - no changes proposed. Ask if you want concrete edits.
+                </p>
               )}
             </div>
           </div>
@@ -162,7 +242,7 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
           <input
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Message..."
+            placeholder="Analyze, brain-dump tasks, or ask for changes..."
             className="flex-1 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-4 py-2.5 text-sm"
           />
           <button

@@ -4,7 +4,7 @@ A personal planning agent that turns a task list into a **time-blocked daily pla
 
 Tasks, applications, and upcoming interviews persist in Supabase.
 The calendar is still an in-memory fake (Google Calendar wiring is deferred - see `GOOGLE_SETUP.md`).
-A chat panel lets you reallocate time in plain language; it always proposes changes for your approval before anything is applied.
+A chat panel is **analysis-first** (plan, backlog + interviews, outcomes/retros): it advises by default and only proposes concrete changes when you ask or a fix is clearly needed. Mutations always stay propose → multi-select confirm → apply (never auto-apply). Planner preferences and a lightweight outcome log feed the assistant; see `AGENTS.md` and `api/chat.py`.
 
 ## Architecture
 
@@ -47,11 +47,14 @@ dayline/
     scheduler/run.py        # run_daily_plan(...) - wiring, idempotent write-back, interview-proximity bump
     api/
       main.py                # FastAPI JSON surface - thin layer over the core
-      chat.py                 # LLM propose/confirm chat (Anthropic SDK, no MCP)
+      chat.py                 # analysis-first LLM chat (read tools + propose/confirm)
+    adapters/
+      preferences.py         # planner preference memory (Supabase + in-memory)
+      outcomes.py            # lightweight outcome log for retros
   web/                       # Next.js dashboard - fetches api/main.py, renders
   supabase/
     schema.sql               # base schema
-    migrations/              # 002_dayline_features.sql, 003_seed_category_weights.sql (run in order)
+    migrations/              # run in order; includes 009_planner_preferences_outcomes.sql
   tests/
     test_planner_core.py    # every planning-core rule
     test_scheduler_run.py   # end-to-end + idempotency + interview-proximity bump
