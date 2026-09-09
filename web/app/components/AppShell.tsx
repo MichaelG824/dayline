@@ -13,7 +13,7 @@ import {
   planDay,
 } from '../lib/api';
 import { computeDayTasks } from '../lib/dayTasks';
-import { usePomodoro } from '../lib/usePomodoro';
+import { usePomodoro, formatClock } from '../lib/usePomodoro';
 import { Sidebar } from './Sidebar';
 import { TasksTab } from './TasksTab';
 import { InterviewsTab } from './InterviewsTab';
@@ -21,12 +21,6 @@ import { ChatTab } from './ChatTab';
 import { PomodoroTab } from './PomodoroTab';
 
 export type Tab = 'tasks' | 'interviews' | 'chat' | 'pomodoro';
-
-function formatClock(totalSeconds: number): string {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
 
 interface Props {
   initialDay: string;

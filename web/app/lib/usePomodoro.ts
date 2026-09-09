@@ -26,6 +26,14 @@ export interface Pomodoro {
   setFocusMin: (min: FocusMinutes) => void;
 }
 
+// MM:SS for the ring and the nav countdown. Shared so the two render sites
+// can't drift.
+export function formatClock(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 function durationFor(mode: PomodoroMode, focusMin: FocusMinutes): number {
   if (mode === 'short') return SHORT_BREAK_MIN * 60;
   if (mode === 'long') return LONG_BREAK_MIN * 60;
