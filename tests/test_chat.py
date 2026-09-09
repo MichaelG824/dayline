@@ -199,6 +199,23 @@ def test_read_tools_auto_execute_stable_json_shapes() -> None:
     assert "payload" in outcomes[0]
 
 
+def test_read_tool_loop_is_bounded() -> None:
+    """A model that keeps calling read tools can't spin forever on paid calls."""
+    from dayline.api.chat import MAX_TOOL_ROUNDS
+
+    deps, *_ = _make_deps()
+    client = MagicMock()
+    # Every response only ever calls a read tool, never returns final text.
+    client.messages.create.return_value = _FakeResponse(
+        content=[_FakeToolUse(id="a", name="list_tasks", input={})]
+    )
+
+    result = run_chat_turn(client, deps, DAY, "loop forever")
+
+    assert client.messages.create.call_count == MAX_TOOL_ROUNDS
+    assert result.proposals == []
+
+
 def test_propose_path_collects_without_applying() -> None:
     deps, source, *_ = _make_deps(
         tasks=[

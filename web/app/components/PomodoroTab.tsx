@@ -1,6 +1,6 @@
 'use client';
 
-import { FocusMinutes, Pomodoro, PomodoroMode } from '../lib/usePomodoro';
+import { FocusMinutes, Pomodoro, PomodoroMode, formatClock } from '../lib/usePomodoro';
 
 const ACCENT: Record<
   PomodoroMode,
@@ -27,12 +27,6 @@ const ACCENT: Record<
 };
 
 const MODES: PomodoroMode[] = ['focus', 'short', 'long'];
-
-function formatClock(totalSeconds: number): string {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
 
 const RING_R = 120;
 const RING_C = 2 * Math.PI * RING_R;

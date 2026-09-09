@@ -28,6 +28,12 @@ from dayline.models import Category, Priority, Task
 
 MODEL = "claude-opus-4-8"
 
+# Safety cap on read-tool round-trips in one turn. Read tools continue the
+# loop; without a bound a model that never stops calling them would spin on
+# paid API calls forever. A handful of rounds is far more than any real
+# analysis needs (all reads in a response run in one round).
+MAX_TOOL_ROUNDS = 8
+
 SYSTEM_PROMPT = """You are Dayline's analysis-first planning assistant for interview prep.
 
 Primary job: analyze today's plan, the backlog + upcoming interviews, and recent \
@@ -323,7 +329,7 @@ def run_chat_turn(
     response = None
     system = _system_prompt(deps)
 
-    while True:
+    for _ in range(MAX_TOOL_ROUNDS):
         response = client.messages.create(
             model=MODEL,
             max_tokens=4096,
@@ -369,7 +375,8 @@ def run_chat_turn(
         if stop_loop:
             break
 
-    explanation = next((b.text for b in response.content if b.type == "text"), "")
+    content = response.content if response is not None else []
+    explanation = next((b.text for b in content if b.type == "text"), "")
     return ChatTurnResult(explanation=explanation, proposals=proposals, history=messages)
 
 
