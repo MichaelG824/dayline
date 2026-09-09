@@ -14,9 +14,17 @@ from dayline.models import Category, Priority
 
 def _deps(source: InMemoryTaskSource) -> ChatDeps:
     empty: list[dict[str, Any]] = []
+    def get_plan(_d: date) -> dict[str, Any]:
+        return {
+            "day": date.today().isoformat(),
+            "brief": "",
+            "blocks": [],
+            "unplaced": [],
+        }
+
     return ChatDeps(
         task_source=source,
-        get_plan=lambda _d: {"day": date.today().isoformat(), "brief": "", "blocks": [], "unplaced": []},
+        get_plan=get_plan,
         list_interviews=lambda: empty,
         get_category_ranks=lambda: empty,
         get_preferences=lambda: {},

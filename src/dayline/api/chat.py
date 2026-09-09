@@ -62,7 +62,7 @@ one turn rather than asking the user to send one task at a time.
 Read tools (auto-executed): list_tasks, get_plan, list_interviews, \
 get_category_ranks, get_preferences, get_recent_outcomes.
 Use them before analyzing or proposing. Never claim you applied a change - \
-proposals await user confirmation."""
+proposals await user confirmation.
 
 For propose_new_task, category MUST be exactly one of these strings: \
 "AI Coding - React/Python", "AI Coding - DSA", "Behavioral", "System Design", \
@@ -128,7 +128,10 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "propose_new_task",
-        "description": "Propose creating a new task (emit multiple for brain-dumps); category must be an exact Category value.",
+        "description": (
+            "Propose creating a new task (multiple OK for brain-dumps). "
+            "category must be an exact Category value."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -388,7 +391,7 @@ def parse_category(raw: str) -> Category:
     """Resolve a proposal category string to :class:`Category`.
 
     Accepts exact enum values, case-insensitive matches, and a small alias map
-    for labels models invent (e.g. \"Interview Prep\" -> Behavioral).
+    for labels models invent (e.g. "Interview Prep" -> Behavioral).
     """
     text = (raw or "").strip()
     if not text:
