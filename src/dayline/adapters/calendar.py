@@ -292,9 +292,26 @@ class GoogleCalendarClient:
     def _load_credentials(
         self, credentials_path: str | Path | None, token_path: str | Path | None
     ) -> Any:
+        import os
+
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
+
+        env_refresh = os.environ.get("GOOGLE_CALENDAR_REFRESH_TOKEN", "").strip()
+        env_client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        env_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        if env_refresh and env_client_id and env_client_secret:
+            creds = Credentials(
+                token=None,
+                refresh_token=env_refresh,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=env_client_id,
+                client_secret=env_client_secret,
+                scopes=GOOGLE_SCOPES,
+            )
+            creds.refresh(Request())
+            return creds
 
         repo_root = Path(__file__).resolve().parents[3]
         cred_file = (
@@ -304,10 +321,7 @@ class GoogleCalendarClient:
 
         creds = None
         if token_file.exists():
-            # google-auth ships no py.typed marker, so this call is reported
-            # as untyped even under our ignore_missing_imports override above
-            # (which only covers unresolved imports, not untyped calls).
-            creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call]
+            creds = Credentials.from_authorized_user_file(
                 str(token_file), GOOGLE_SCOPES
             )
         if creds and creds.valid:

@@ -11,13 +11,15 @@ stays in-memory and day-keyed (task blocks are never written to a real
 calendar - deliberate, see AGENTS.md). ``google_calendar`` starts ``None`` and
 is set by ``POST /api/calendar/connect`` (see ``services/calendar.py``).
 
-Importing this module constructs the context, which needs ``SUPABASE_URL`` and
-``SUPABASE_SERVICE_ROLE_KEY`` in the environment (see ``.env.example``) - same
-requirement the old ``api/main.py`` import carried.
+``get_context()`` constructs the context on first use, which needs
+``SUPABASE_URL`` and ``SUPABASE_SERVICE_ROLE_KEY`` in the environment (see
+``.env.example``). Importing this module does not talk to Supabase, so auth
+tests can mount the app without live credentials.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, Annotated
@@ -66,6 +68,23 @@ class AppContext:
         return self.calendars[day]
 
 
+def _google_calendar_from_env() -> GoogleCalendarClient | None:
+    """Use a stored refresh token when one is provided (production).
+
+    Cloud Run / Render disks are ephemeral, so the desktop ``token.json`` flow
+    cannot survive scale-to-zero. A refresh token in
+    ``GOOGLE_CALENDAR_REFRESH_TOKEN`` (plus the web OAuth client id/secret)
+    reconstructs the client at boot. Returns ``None`` when unset so local
+    ``POST /api/calendar/connect`` still runs the desktop flow.
+    """
+    if not os.environ.get("GOOGLE_CALENDAR_REFRESH_TOKEN", "").strip():
+        return None
+    try:
+        return GoogleCalendarClient()
+    except (RuntimeError, OSError, ValueError):
+        return None
+
+
 def build_context() -> AppContext:
     """Construct the single application context (Supabase-backed, live client)."""
     client = get_supabase_client()
@@ -75,17 +94,22 @@ def build_context() -> AppContext:
         application_source=SupabaseApplicationSource(client),
         interview_source=SupabaseInterviewSource(client),
         anthropic_client=anthropic.Anthropic(),
+        google_calendar=_google_calendar_from_env(),
     )
 
 
-# Single shared context for the process - constructed once at import, matching
-# the old module-load behavior in api/main.py.
-context = build_context()
+# Lazy: importing the API (and therefore this module) must not require live
+# Supabase credentials. Tests override ``get_context``; uvicorn builds on first
+# request that needs adapters.
+_context: AppContext | None = None
 
 
 def get_context() -> AppContext:
     """FastAPI-style accessor for the shared context (used by controllers/services)."""
-    return context
+    global _context
+    if _context is None:
+        _context = build_context()
+    return _context
 
 
 # Annotated dependency the controllers use to inject the shared context - the

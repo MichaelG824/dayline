@@ -65,7 +65,7 @@ export function AppShell({
       setPlan(nextPlan);
       setTasks(nextTasks);
     } catch {
-      setError('Could not reach the planner API - is it running on :8000?');
+      setError('Could not reach the planner API.');
     } finally {
       setLoading(false);
     }

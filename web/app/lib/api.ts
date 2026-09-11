@@ -111,9 +111,29 @@ export const RECURRENCES = ['Daily', 'Weekdays', 'Weekly'] as const;
 
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+// Same-origin `/api` by default (Next rewrites in dev; Caddy reverse-proxies
+// in production). Set NEXT_PUBLIC_API_URL only when the browser must talk to
+// a different origin (the old two-port local setup without the rewrite).
+const API = process.env.NEXT_PUBLIC_API_URL ?? '';
+
+export interface AuthUser {
+  email: string;
+  allowed: boolean;
+}
+
+function redirectForAuth(status: number): void {
+  if (typeof window === 'undefined') return;
+  if (status === 401) {
+    window.location.replace('/login');
+  } else if (status === 403) {
+    window.location.replace('/not-allowed');
+  }
+}
 
 async function checkOk(res: Response, message: string): Promise<Response> {
+  if (res.status === 401 || res.status === 403) {
+    redirectForAuth(res.status);
+  }
   if (!res.ok) {
     let detail = '';
     try {
@@ -127,19 +147,26 @@ async function checkOk(res: Response, message: string): Promise<Response> {
   return res;
 }
 
+function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  return fetch(`${API}${path}`, {
+    ...init,
+    headers,
+    credentials: 'include',
+    cache: init.cache ?? 'no-store',
+  });
+}
+
 // Compute (and commit) the plan for a day. Mirrors run_daily_plan's own
 // idempotency: calling this again for the same day reconciles, not duplicates.
 export async function planDay(day: string): Promise<PlanResponse> {
-  const res = await fetch(`${API}/api/plan?day=${day}`, {
-    method: 'POST',
-    cache: 'no-store',
-  });
+  const res = await apiFetch(`/api/plan?day=${day}`, { method: 'POST' });
   return (await checkOk(res, 'Failed to plan day')).json();
 }
 
 // Current tasks (with status/scheduled time) for a day's store.
 export async function getTasks(day: string): Promise<TaskRow[]> {
-  const res = await fetch(`${API}/api/tasks?day=${day}`, { cache: 'no-store' });
+  const res = await apiFetch(`/api/tasks?day=${day}`);
   return (await checkOk(res, 'Failed to load tasks')).json();
 }
 
@@ -157,7 +184,7 @@ export interface CreateTaskInput {
 }
 
 export async function createTask(input: CreateTaskInput): Promise<TaskRow> {
-  const res = await fetch(`${API}/api/tasks`, {
+  const res = await apiFetch('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -176,7 +203,7 @@ export interface UpdateTaskInput {
 }
 
 export async function updateTask(taskId: string, input: UpdateTaskInput): Promise<TaskRow> {
-  const res = await fetch(`${API}/api/tasks/${taskId}`, {
+  const res = await apiFetch(`/api/tasks/${taskId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -185,17 +212,17 @@ export async function updateTask(taskId: string, input: UpdateTaskInput): Promis
 }
 
 export async function deleteTask(taskId: string): Promise<void> {
-  const res = await fetch(`${API}/api/tasks/${taskId}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
   await checkOk(res, 'Failed to delete task');
 }
 
 export async function getCategoryWeights(): Promise<CategoryWeight[]> {
-  const res = await fetch(`${API}/api/category-weights`, { cache: 'no-store' });
+  const res = await apiFetch('/api/category-weights');
   return (await checkOk(res, 'Failed to load category weights')).json();
 }
 
 export async function putCategoryWeights(weights: CategoryWeight[]): Promise<CategoryWeight[]> {
-  const res = await fetch(`${API}/api/category-weights`, {
+  const res = await apiFetch('/api/category-weights', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(weights),
@@ -204,12 +231,12 @@ export async function putCategoryWeights(weights: CategoryWeight[]): Promise<Cat
 }
 
 export async function applyCategoryWeights(): Promise<{ updated: number }> {
-  const res = await fetch(`${API}/api/category-weights/apply`, { method: 'POST' });
+  const res = await apiFetch('/api/category-weights/apply', { method: 'POST' });
   return (await checkOk(res, 'Failed to apply category weights')).json();
 }
 
 export async function getUpcomingInterviews(): Promise<Interview[]> {
-  const res = await fetch(`${API}/api/interviews?upcoming=true`, { cache: 'no-store' });
+  const res = await apiFetch('/api/interviews?upcoming=true');
   return (await checkOk(res, 'Failed to load interviews')).json();
 }
 
@@ -221,7 +248,7 @@ export interface CreateInterviewInput {
 }
 
 export async function createInterview(input: CreateInterviewInput): Promise<Interview> {
-  const res = await fetch(`${API}/api/interviews`, {
+  const res = await apiFetch('/api/interviews', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -230,7 +257,7 @@ export async function createInterview(input: CreateInterviewInput): Promise<Inte
 }
 
 export async function deleteInterview(interviewId: string): Promise<void> {
-  const res = await fetch(`${API}/api/interviews/${interviewId}`, { method: 'DELETE' });
+  const res = await apiFetch(`/api/interviews/${interviewId}`, { method: 'DELETE' });
   await checkOk(res, 'Failed to delete interview');
 }
 
@@ -239,7 +266,7 @@ export interface CalendarStatus {
 }
 
 export async function getCalendarStatus(): Promise<CalendarStatus> {
-  const res = await fetch(`${API}/api/calendar/status`, { cache: 'no-store' });
+  const res = await apiFetch('/api/calendar/status');
   return (await checkOk(res, 'Failed to load calendar status')).json();
 }
 
@@ -247,7 +274,8 @@ export async function getCalendarStatus(): Promise<CalendarStatus> {
 // the backend's exact setup-gap message (e.g. missing credentials.json)
 // rather than a generic error, since that message tells the user what to do.
 export async function connectCalendar(): Promise<CalendarStatus> {
-  const res = await fetch(`${API}/api/calendar/connect`, { method: 'POST' });
+  const res = await apiFetch('/api/calendar/connect', { method: 'POST' });
+  if (res.status === 401 || res.status === 403) redirectForAuth(res.status);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail ?? 'Failed to connect Google Calendar');
@@ -256,7 +284,8 @@ export async function connectCalendar(): Promise<CalendarStatus> {
 }
 
 export async function syncInterviewsToCalendar(): Promise<{ synced: number }> {
-  const res = await fetch(`${API}/api/calendar/sync-interviews`, { method: 'POST' });
+  const res = await apiFetch('/api/calendar/sync-interviews', { method: 'POST' });
+  if (res.status === 401 || res.status === 403) redirectForAuth(res.status);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail ?? 'Failed to sync interviews');
@@ -272,7 +301,7 @@ export async function updateInterviewCategory(
   interviewId: string,
   category: string
 ): Promise<Interview> {
-  const res = await fetch(`${API}/api/interviews/${interviewId}`, {
+  const res = await apiFetch(`/api/interviews/${interviewId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ category }),
@@ -287,17 +316,17 @@ export async function hideInterview(interviewId: string): Promise<void> {
 }
 
 export async function getHiddenInterviews(): Promise<Interview[]> {
-  const res = await fetch(`${API}/api/interviews/hidden`, { cache: 'no-store' });
+  const res = await apiFetch('/api/interviews/hidden');
   return (await checkOk(res, 'Failed to load hidden interviews')).json();
 }
 
 export async function unhideInterview(interviewId: string): Promise<Interview> {
-  const res = await fetch(`${API}/api/interviews/${interviewId}/unhide`, { method: 'POST' });
+  const res = await apiFetch(`/api/interviews/${interviewId}/unhide`, { method: 'POST' });
   return (await checkOk(res, 'Failed to unhide interview')).json();
 }
 
 export async function getApplications(): Promise<Application[]> {
-  const res = await fetch(`${API}/api/applications`, { cache: 'no-store' });
+  const res = await apiFetch('/api/applications');
   return (await checkOk(res, 'Failed to load applications')).json();
 }
 
@@ -308,7 +337,7 @@ export interface CreateApplicationInput {
 }
 
 export async function createApplication(input: CreateApplicationInput): Promise<Application> {
-  const res = await fetch(`${API}/api/applications`, {
+  const res = await apiFetch('/api/applications', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -321,7 +350,7 @@ export async function sendChatMessage(
   message: string,
   history?: unknown[]
 ): Promise<ChatResponse> {
-  const res = await fetch(`${API}/api/chat`, {
+  const res = await apiFetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ day, message, history }),
@@ -334,7 +363,7 @@ export async function confirmProposals(
   proposals: Proposal[],
   offered?: Proposal[]
 ): Promise<ChatConfirmResponse> {
-  const res = await fetch(`${API}/api/chat/confirm`, {
+  const res = await apiFetch('/api/chat/confirm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ day, proposals, offered }),
@@ -343,17 +372,29 @@ export async function confirmProposals(
 }
 
 export async function getPreferences(): Promise<PlannerPreferences> {
-  const res = await fetch(`${API}/api/preferences`, { cache: 'no-store' });
+  const res = await apiFetch('/api/preferences');
   return (await checkOk(res, 'Failed to load preferences')).json();
 }
 
 export async function putPreferences(
   input: Partial<PlannerPreferences>
 ): Promise<PlannerPreferences> {
-  const res = await fetch(`${API}/api/preferences`, {
+  const res = await apiFetch('/api/preferences', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
   return (await checkOk(res, 'Failed to save preferences')).json();
+}
+
+export async function getMe(): Promise<AuthUser> {
+  const res = await apiFetch('/api/auth/me');
+  return (await checkOk(res, 'Sign in required')).json();
+}
+
+export async function signOut(): Promise<void> {
+  await apiFetch('/api/auth/logout', { method: 'POST' });
+  if (typeof window !== 'undefined') {
+    window.location.replace('/login');
+  }
 }

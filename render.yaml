@@ -1,0 +1,33 @@
+# Render Blueprint. Connect this GitHub repo in the Render dashboard.
+# Use a Starter plan (or higher): the free web timeout is 30s, which is too
+# short for POST /api/chat. Cloud Run (300s) is the better sleep-when-idle host
+# if chat round-trips feel tight on Render's 100s cap.
+#
+# Enable instance spin-down in the service settings so the box sleeps when idle.
+
+services:
+  - type: web
+    name: dayline
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: ALLOWED_EMAIL
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: PUBLIC_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_CALENDAR_REFRESH_TOKEN
+        sync: false

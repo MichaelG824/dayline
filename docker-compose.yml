@@ -1,0 +1,10 @@
+services:
+  dayline:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      PUBLIC_URL: http://localhost:8080
+      GOOGLE_REDIRECT_URI: http://localhost:8080/api/auth/callback
+    restart: unless-stopped

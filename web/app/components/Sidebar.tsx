@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CategoryWeight, Interview, applyCategoryWeights, putCategoryWeights } from '../lib/api';
+import { CategoryWeight, Interview, applyCategoryWeights, putCategoryWeights, signOut } from '../lib/api';
 import { categoryMeta, formatDuration, isMiscCategory, rankCategories } from '../lib/categories';
 import { DayTask } from '../lib/dayTasks';
 import { daysUntil, formatDayLabel } from '../lib/dates';
@@ -181,12 +181,21 @@ export function Sidebar({
         </div>
       )}
 
-      <button
-        onClick={onGoToCalendar}
-        className="mt-auto text-sm rounded-lg border border-zinc-200 dark:border-zinc-800 py-2 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-300 dark:hover:border-zinc-700"
-      >
-        Connect Google Calendar
-      </button>
+      <div className="mt-auto flex flex-col gap-2">
+        <button
+          onClick={onGoToCalendar}
+          className="text-sm rounded-lg border border-zinc-200 dark:border-zinc-800 py-2 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-300 dark:hover:border-zinc-700"
+        >
+          Connect Google Calendar
+        </button>
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          className="text-sm rounded-lg py-2 text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+        >
+          Sign out
+        </button>
+      </div>
     </aside>
   );
 }
