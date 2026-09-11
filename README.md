@@ -3,7 +3,7 @@
 A personal planning agent that turns a task list into a **time-blocked daily plan** - centered on job-search interview prep (AI coding, behavioral, system design, Leetcode) with everyday errands slotted underneath at lower priority.
 
 Tasks, applications, and upcoming interviews persist in Supabase.
-The calendar is still an in-memory fake (Google Calendar wiring is deferred - see `GOOGLE_SETUP.md`).
+Day-scheduling stays in-memory; interviews can sync to Google Calendar (see `GOOGLE_SETUP.md`).
 A chat panel is **analysis-first** (plan, backlog + interviews, outcomes/retros): it advises by default and only proposes concrete changes when you ask or a fix is clearly needed. Mutations always stay propose → multi-select confirm → apply (never auto-apply). Planner preferences and a lightweight outcome log feed the assistant; see `AGENTS.md` and `api/chat.py`.
 
 ## Architecture
@@ -32,7 +32,7 @@ The core and scheduler depend **only** on the adapter Protocols, never a concret
 dayline/
   pyproject.toml
   README.md
-  .env.example              # SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY
+  .env.example              # Supabase, Anthropic, Google sign-in, AUTH_SECRET
   .gitignore
   src/dayline/
     models.py               # Task, Application, Interview, TimeSlot, ScheduledBlock, Plan + enums
@@ -47,6 +47,7 @@ dayline/
     scheduler/run.py        # run_daily_plan(...) - wiring, idempotent write-back, interview-proximity bump
     api/
       main.py                # FastAPI JSON surface - thin layer over the core
+      auth.py                # Google sign-in + ALLOWED_EMAIL gate
       chat.py                 # analysis-first LLM chat (read tools + propose/confirm)
     adapters/
       preferences.py         # planner preference memory (Supabase + in-memory)
@@ -88,12 +89,12 @@ Requires **Python 3.11+**.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'      # core + fastapi/uvicorn/supabase/anthropic + pytest/ruff/mypy
-cp .env.example .env         # fill in SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY
+cp .env.example .env         # fill in Supabase, Anthropic, AUTH_SECRET, Google OAuth client
 ```
 
 The planning core and adapter Protocols are stdlib-only and need no credentials to build or test.
-The API (`api/main.py`) does need `.env` populated, since it constructs the Supabase and Anthropic clients at import time.
-The `google` extra backs the deferred `GoogleCalendarClient` (see `GOOGLE_SETUP.md`) and is not needed for anything else.
+The API (`api/main.py`) does need `.env` populated for live adapters (Supabase, Anthropic) and for Google sign-in (`AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`).
+The `google` extra backs `GoogleCalendarClient` (see `GOOGLE_SETUP.md`) and is not needed for sign-in.
 
 ### Supabase setup
 
@@ -126,27 +127,63 @@ dayline
 
 It seeds a realistic scenario (a fixed Leetcode contest, prep tasks, an errand, and a pre-existing "Team standup" event), runs the pipeline, and prints the brief.
 
-## Run the dashboard (FastAPI + Next.js)
+## Sign-in
+
+Dayline is locked to one Google account, proven with Google sign-in (not a typed email).
+Set `ALLOWED_EMAIL` to the one Google account that may use the app.
+Every `/api/*` route except `/api/health` and `/api/auth/*` returns 401 when logged out and 403 when signed in as anyone else.
+The Next.js UI sends the session cookie on every `web/app/lib/api.ts` fetch (`credentials: 'include'`).
+
+Create a Google Cloud **Web application** OAuth client (not the Calendar desktop client).
+Authorized JavaScript origin: `PUBLIC_URL`.
+Authorized redirect URI: `{PUBLIC_URL}/api/auth/callback`.
+Put the client id/secret and a stable `AUTH_SECRET` in `.env`.
+
+## Run the dashboard locally (FastAPI + Next.js)
 
 Two processes, in separate terminals:
 
 ```bash
-# Terminal 1 - API (reads .env for Supabase + Anthropic credentials)
+# Terminal 1 - API (reads .env)
 uvicorn dayline.api.main:app --reload --port 8000
 
-# Terminal 2 - UI
+# Terminal 2 - UI (rewrites /api/* to the API so the browser stays same-origin)
 cd web
 npm install   # first time only
 npm run dev
 ```
 
 Open http://localhost:3000 (or :3003/:3004 if 3000 is taken).
-API CORS in `api/main.py` must include the Next origin you use, or browser calls like chat fail with "Could not reach the chat assistant."
-The dashboard shows a day picker, the plan (ordered blocks with times), the `unplaced` list, and the `brief`; a task creation form; inline duration/priority editing on the task list; a category focus-ranking panel; an upcoming-interviews tracker; and a chat panel that proposes plan changes for your approval before applying them.
+Logged-out visitors see the sign-in screen, not the planner.
+The dashboard shows a day picker, the plan, unplaced tasks, a brief, task editing, category ranking, interviews, and chat.
 "Re-plan" re-runs the scheduler and re-renders, demonstrating idempotency (no duplicate blocks).
-All logic lives in the core/scheduler/adapters; `api/main.py` only calls interfaces and serializes JSON, and `web/` only fetches and renders.
+All logic lives in the core/scheduler/adapters.
+`api/main.py` only calls interfaces and serializes JSON, and `web/` only fetches and renders.
+
+## Production (one URL, sleeps when idle)
+
+The production shape is one container (`Dockerfile`).
+Caddy reverse-proxies Next.js and FastAPI on a single origin so cookies stay simple.
+Chat (`POST /api/chat`) needs a host whose request timeout can cover an Anthropic round-trip (minutes, not a 10s hobby function).
+
+Preferred host: **Cloud Run** with `--min-instances=0` and `--timeout=300`.
+Allow unauthenticated Cloud Run IAM so the login page is reachable; Dayline's Google allowlist is the actual lock.
+Render (`render.yaml`) also spins down from GitHub.
+Use Starter or higher there (free is a 30s timeout).
+
+Captain steps after this repo is on GitHub:
+
+1. Create the Google **Web application** OAuth client above.
+2. Pick Cloud Run or Render, deploy the `Dockerfile`, and set env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `AUTH_SECRET`, `ALLOWED_EMAIL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (the `https://...` service URL).
+3. Add `{PUBLIC_URL}/api/auth/callback` to the OAuth client's redirect URIs (and `{PUBLIC_URL}` as an authorized JavaScript origin).
+4. Optional interviews-on-calendar: set `GOOGLE_CALENDAR_REFRESH_TOKEN` (see `GOOGLE_SETUP.md`).
+   The desktop `credentials.json` flow does not survive scale-to-zero.
+
+Do not put a public URL in front of the API until sign-in is configured.
+A local production-shaped run is `docker compose up --build` on http://localhost:8080.
 
 ## Deferred / out of scope
 
-- `GoogleCalendarClient` is implemented (`adapters/calendar.py`) but not constructed in `api/main.py`, which still uses `InMemoryCalendar` - see `GOOGLE_SETUP.md` to wire it in.
+- Production Google Calendar still needs a one-time refresh token in env (`GOOGLE_SETUP.md`).
+  Connect in the Interviews tab is the local desktop flow.
 - OS-level cron/launchd installation for an unattended morning run.

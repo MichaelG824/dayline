@@ -84,6 +84,23 @@ run_daily_plan(date.today(), SupabaseTaskSource(get_supabase_client()), GoogleCa
 The planner reads your busy time, plans around it, and writes marker-tagged
 blocks (`[dayline] ...`) it can safely re-create on the next run.
 
+## 6. Production (scale-to-zero)
+
+The desktop Installed-app flow writes `token.json` next to the process.
+That file disappears every time Cloud Run / Render spins down, and
+`run_local_server(port=0)` cannot open a browser on those hosts.
+
+For production interviews:
+
+1. Finish steps 1-4 locally once so `token.json` exists.
+2. Copy the `refresh_token` field into env `GOOGLE_CALENDAR_REFRESH_TOKEN`.
+3. Set the same web OAuth `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` used for sign-in
+   (enable the Calendar API on that client, and add the Calendar scope if Google asks).
+4. Redeploy.
+   `AppContext` constructs `GoogleCalendarClient` from that refresh token at boot.
+
+Do not commit `token.json` or `credentials.json`.
+
 ## Options
 
 ```python
