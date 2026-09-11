@@ -5,6 +5,9 @@
 :{$PORT:8080} {
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8000 {
+			header_up Host {http.request.host}
+			header_up X-Forwarded-Host {http.request.host}
+			header_up X-Forwarded-Proto https
 			transport http {
 				read_timeout 5m
 				write_timeout 5m
@@ -13,6 +16,10 @@
 	}
 
 	handle {
-		reverse_proxy 127.0.0.1:3000
+		reverse_proxy 127.0.0.1:3000 {
+			header_up Host {http.request.host}
+			header_up X-Forwarded-Host {http.request.host}
+			header_up X-Forwarded-Proto https
+		}
 	}
 }
