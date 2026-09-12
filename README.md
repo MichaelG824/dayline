@@ -83,13 +83,11 @@ Each run deletes its own prior blocks for the day before re-planning, so re-runn
 
 ## Setup
 
-Requires **Python 3.11+**.
+Requires **Python 3.12** locally (pinned in `.python-version`; production Docker stays on `python:3.12-slim` with `pip`).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'      # core + fastapi/uvicorn/supabase/anthropic + pytest/ruff/mypy
-cp .env.example .env         # fill in Supabase, Anthropic, AUTH_SECRET, Google OAuth client
+uv sync --extra dev --extra google   # creates .venv, installs core + google extra + pytest/ruff/mypy/debugpy
+cp .env.example .env                 # fill in Supabase, Anthropic, AUTH_SECRET, Google OAuth client
 ```
 
 The planning core and adapter Protocols are stdlib-only and need no credentials to build or test.
@@ -110,9 +108,9 @@ Copy the **Project URL** and the **secret key** (Settings → API Keys; not the 
 ## Run the tests
 
 ```bash
-pytest          # unit tests for every core rule + end-to-end idempotency + interview-proximity bump
-ruff check .    # lint
-mypy            # type-check (config in pyproject.toml)
+uv run pytest          # unit tests for every core rule + end-to-end idempotency + interview-proximity bump
+uv run ruff check .    # lint
+uv run mypy            # type-check (config in pyproject.toml)
 ```
 
 ## Sample end-to-end run (against the fakes)
@@ -120,9 +118,9 @@ mypy            # type-check (config in pyproject.toml)
 Stands in for a future morning cron - no network, no credentials:
 
 ```bash
-python -m dayline.scheduler.run
-# or, after `pip install -e .`:
-dayline
+uv run python -m dayline.scheduler.run
+# or:
+uv run dayline
 ```
 
 It seeds a realistic scenario (a fixed Leetcode contest, prep tasks, an errand, and a pre-existing "Team standup" event), runs the pipeline, and prints the brief.
@@ -144,8 +142,9 @@ Put the client id/secret and a stable `AUTH_SECRET` in `.env`.
 Two processes, in separate terminals:
 
 ```bash
-# Terminal 1 - API (reads .env)
-uvicorn dayline.api.main:app --reload --port 8000
+# Terminal 1 - API (reads .env). Cursor/VS Code: Run and Debug → "Dayline API (chat)"
+# (no --reload: the reloader forks a child and breakpoints miss)
+uv run uvicorn dayline.api.main:app --port 8000
 
 # Terminal 2 - UI (rewrites /api/* to the API so the browser stays same-origin)
 cd web
