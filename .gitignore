@@ -33,5 +33,6 @@ htmlcov/
 
 # Editor / OS
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
 .DS_Store

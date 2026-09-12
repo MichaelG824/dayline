@@ -51,7 +51,7 @@ Do not put a public URL in front of the API until Google OAuth env is set.
 
 ## Commands
 
-- Backend dev install: `pip install -e '.[dev]'`. Requires a populated `.env` (see `.env.example`) to run the API - the pure core/scheduler/tests do not need it. Auth tests (`tests/test_auth.py`) do not need live Supabase. Checks: `pytest`, `ruff check .`, `mypy`. Sample run: `python -m dayline.scheduler.run`. API: `uvicorn dayline.api.main:app --reload --port 8000`.
+- Backend local install: `uv sync --extra dev --extra google` (Python 3.12 via `.python-version`; lockfile `uv.lock`). Requires a populated `.env` (see `.env.example`) to run the API - the pure core/scheduler/tests do not need it. Auth tests (`tests/test_auth.py`) do not need live Supabase. Checks: `uv run pytest`, `uv run ruff check .`, `uv run mypy`. Sample run: `uv run python -m dayline.scheduler.run`. API: `uv run uvicorn dayline.api.main:app --port 8000` (no `--reload`; Cursor/VS Code launch config `.vscode/launch.json` "Dayline API (chat)" attaches debugpy). Production Docker still uses `pip` / `python:3.12-slim`.
 - Frontend: `cd web && npm install && npm run dev` (http://localhost:3000; Next rewrites `/api/*` to :8000).
 
 ## Maintaining this file
