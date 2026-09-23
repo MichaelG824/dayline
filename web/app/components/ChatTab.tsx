@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { PlanResponse, Proposal, confirmProposals, sendChatMessage } from '../lib/api';
+import { PlanResponse, Proposal, confirmProposals, streamChatMessage } from '../lib/api';
 
 interface Props {
   day: string;
@@ -42,6 +42,7 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
   const [message, setMessage] = useState('');
   const [history, setHistory] = useState<unknown[]>([]);
   const [explanation, setExplanation] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -51,16 +52,25 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
     if (!text.trim()) return;
     setLoading(true);
     setError(null);
+    setExplanation(null);
+    setStatus(null);
+    setProposals([]);
     try {
-      const res = await sendChatMessage(day, text.trim(), history);
-      setExplanation(res.explanation);
-      setProposals(res.proposals);
-      setSelected(new Set(res.proposals.map((p) => p.id)));
-      setHistory(res.history);
+      await streamChatMessage(day, text.trim(), history, {
+        onStatus: (msg) => setStatus(msg),
+        onDelta: (chunk) => setExplanation((prev) => (prev ?? '') + chunk),
+        onDone: (res) => {
+          setProposals(res.proposals);
+          setSelected(new Set(res.proposals.map((p) => p.id)));
+          setHistory(res.history);
+        },
+        onError: () => setError('Could not reach the chat assistant.'),
+      });
       setMessage('');
     } catch {
       setError('Could not reach the chat assistant.');
     } finally {
+      setStatus(null);
       setLoading(false);
     }
   }
@@ -92,6 +102,7 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
       onPlanUpdated(res.plan);
       setProposals([]);
       setExplanation(null);
+      setStatus(null);
     } catch (err) {
       const detail = err instanceof Error && err.message ? err.message : '';
       setError(
@@ -107,6 +118,7 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
   async function handleDismiss() {
     if (proposals.length === 0) {
       setExplanation(null);
+      setStatus(null);
       return;
     }
     setLoading(true);
@@ -117,9 +129,11 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
       onPlanUpdated(res.plan);
       setProposals([]);
       setExplanation(null);
+      setStatus(null);
     } catch {
       setProposals([]);
       setExplanation(null);
+      setStatus(null);
     } finally {
       setLoading(false);
     }
@@ -145,6 +159,15 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
             </ul>
           </div>
         </div>
+
+        {status && !explanation && (
+          <div className="flex gap-3 max-w-2xl">
+            <div className="w-8 h-8 shrink-0 rounded-full bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 flex items-center justify-center text-xs font-mono">
+              AI
+            </div>
+            <p className="self-center text-xs text-zinc-500 dark:text-zinc-400">{status}</p>
+          </div>
+        )}
 
         {explanation && (
           <div className="flex gap-3 max-w-2xl">
@@ -208,9 +231,13 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
                   </div>
                 </div>
               ) : (
-                <p className="mt-3 text-xs text-zinc-500">
-                  Analysis only - no changes proposed. Ask if you want concrete edits.
-                </p>
+                // Only once the turn has finished - mid-stream there are no
+                // proposals yet, and flashing this line would be wrong.
+                !loading && (
+                  <p className="mt-3 text-xs text-zinc-500">
+                    Analysis only - no changes proposed. Ask if you want concrete edits.
+                  </p>
+                )
               )}
             </div>
           </div>

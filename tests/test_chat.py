@@ -22,6 +22,7 @@ from dayline.api.chat import (
     ChatDeps,
     apply_proposal,
     run_chat_turn,
+    stream_chat_turn,
 )
 from dayline.models import Category, Priority, Status
 from tests.fixtures import task
@@ -362,3 +363,131 @@ def test_outcomes_store_newest_first() -> None:
     recent = store.list_recent(limit=1)
     assert len(recent) == 1
     assert recent[0].kind == "b"
+
+
+# --- streaming turn (stream_chat_turn) -------------------------------------
+
+
+class _FakeStream:
+    """Stands in for the SDK's ``messages.stream`` context manager."""
+
+    def __init__(self, texts: list[str], final: _FakeResponse) -> None:
+        self.text_stream = iter(texts)
+        self._final = final
+
+    def __enter__(self) -> _FakeStream:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def get_final_message(self) -> _FakeResponse:
+        return self._final
+
+
+def _stream_client(*rounds: tuple[list[str], list[Any]]) -> MagicMock:
+    """MagicMock client whose ``messages.stream`` replays (texts, blocks) rounds."""
+    client = MagicMock()
+    streams = [_FakeStream(texts, _FakeResponse(content=blocks)) for texts, blocks in rounds]
+    if len(streams) == 1:
+        client.messages.stream.side_effect = lambda **_: _FakeStream(
+            list(rounds[0][0]), _FakeResponse(content=rounds[0][1])
+        )
+    else:
+        client.messages.stream.side_effect = streams
+    return client
+
+
+def _drain(events: Any) -> tuple[list[tuple[str, Any]], Any]:
+    collected = list(events)
+    assert collected[-1][0] == "result"
+    return collected[:-1], collected[-1][1]
+
+
+def test_stream_yields_text_deltas_in_order() -> None:
+    deps, *_ = _make_deps()
+    client = _stream_client(
+        (["Situation: ", "light ", "day."], [_FakeText(text="Situation: light day.")])
+    )
+
+    events, result = _drain(stream_chat_turn(client, deps, DAY, "How's my plan?"))
+
+    assert [text for kind, text in events if kind == "delta"] == [
+        "Situation: ",
+        "light ",
+        "day.",
+    ]
+    assert result.explanation == "Situation: light day."
+    assert result.proposals == []
+
+
+def test_stream_read_tool_round_emits_status_and_continues() -> None:
+    deps, *_ = _make_deps()
+    client = _stream_client(
+        ([], [_FakeToolUse(id="a", name="list_tasks"), _FakeToolUse(id="b", name="get_plan")]),
+        (["All good."], [_FakeText(text="All good.")]),
+    )
+
+    events, result = _drain(stream_chat_turn(client, deps, DAY, "analyze"))
+
+    statuses = [msg for kind, msg in events if kind == "status"]
+    assert len(statuses) == 1
+    assert statuses[0] == "Reading your tasks and your plan..."
+    assert client.messages.stream.call_count == 2
+    assert result.explanation == "All good."
+    # Tool results were round-tripped back to the model.
+    tool_round = result.history[2]["content"]
+    assert {tr["tool_use_id"] for tr in tool_round} == {"a", "b"}
+
+
+def test_stream_propose_stops_loop_and_lands_in_result() -> None:
+    deps, *_ = _make_deps(
+        tasks=[task("t1", name="Leetcode", category=Category.LEETCODE, duration=30)]
+    )
+    client = _stream_client(
+        (
+            ["Here are changes."],
+            [
+                _FakeText(text="Here are changes."),
+                _FakeToolUse(
+                    id="p1",
+                    name="propose_duration_change",
+                    input={
+                        "task_id": "t1",
+                        "task_name": "Leetcode",
+                        "new_duration_min": 45,
+                        "reason": "more reps",
+                    },
+                ),
+            ],
+        ),
+    )
+
+    events, result = _drain(stream_chat_turn(client, deps, DAY, "bump leetcode"))
+
+    assert [msg for kind, msg in events if kind == "status"] == []
+    assert client.messages.stream.call_count == 1
+    assert result.proposals == [
+        {
+            "type": "propose_duration_change",
+            "id": "p1",
+            "task_id": "t1",
+            "task_name": "Leetcode",
+            "new_duration_min": 45,
+            "reason": "more reps",
+        }
+    ]
+    # Still a proposal only - nothing applied.
+    assert result.explanation == "Here are changes."
+
+
+def test_stream_read_tool_loop_is_bounded() -> None:
+    from dayline.api.chat import MAX_TOOL_ROUNDS
+
+    deps, *_ = _make_deps()
+    client = _stream_client(([], [_FakeToolUse(id="a", name="list_tasks")]))
+
+    _events, result = _drain(stream_chat_turn(client, deps, DAY, "loop forever"))
+
+    assert client.messages.stream.call_count == MAX_TOOL_ROUNDS
+    assert result.proposals == []

@@ -16,7 +16,7 @@ itself; plan snapshots come from a caller-supplied read callback.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
@@ -310,6 +310,47 @@ def _execute_read_tool(name: str, tool_input: dict[str, Any], deps: ChatDeps, da
     return json.dumps({"error": f"Unknown read tool {name!r}"})
 
 
+def _handle_tool_uses(
+    content_blocks: list[Any],
+    deps: ChatDeps,
+    day: date,
+    proposals: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Execute read tools and collect propose tools from one assistant turn.
+
+    Returns the ``tool_result`` blocks to send back and whether the loop should
+    stop. Empty results mean the turn had no ``tool_use`` blocks at all, which
+    also ends the loop. Shared by the blocking and streaming turn runners.
+    """
+    tool_uses = [b for b in content_blocks if b.type == "tool_use"]
+    tool_results: list[dict[str, Any]] = []
+    stop_loop = False
+    for tu in tool_uses:
+        if tu.name in _READ_TOOL_NAMES:
+            result = _execute_read_tool(tu.name, dict(tu.input or {}), deps, day)
+            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result})
+        elif tu.name in _PROPOSE_TOOL_NAMES:
+            proposals.append({"type": tu.name, "id": tu.id, **dict(tu.input or {})})
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": "Proposal recorded, awaiting user confirmation.",
+                }
+            )
+            stop_loop = True
+        else:
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": f"Unknown tool {tu.name!r}",
+                    "is_error": True,
+                }
+            )
+    return tool_results, stop_loop
+
+
 def run_chat_turn(
     client: anthropic.Anthropic,
     deps: ChatDeps,
@@ -339,37 +380,9 @@ def run_chat_turn(
         )
         messages.append({"role": "assistant", "content": response.content})
 
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-        if not tool_uses:
+        tool_results, stop_loop = _handle_tool_uses(response.content, deps, day, proposals)
+        if not tool_results:
             break
-
-        tool_results: list[dict[str, Any]] = []
-        stop_loop = False
-        for tu in tool_uses:
-            if tu.name in _READ_TOOL_NAMES:
-                result = _execute_read_tool(tu.name, dict(tu.input or {}), deps, day)
-                tool_results.append(
-                    {"type": "tool_result", "tool_use_id": tu.id, "content": result}
-                )
-            elif tu.name in _PROPOSE_TOOL_NAMES:
-                proposals.append({"type": tu.name, "id": tu.id, **dict(tu.input or {})})
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tu.id,
-                        "content": "Proposal recorded, awaiting user confirmation.",
-                    }
-                )
-                stop_loop = True
-            else:
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tu.id,
-                        "content": f"Unknown tool {tu.name!r}",
-                        "is_error": True,
-                    }
-                )
 
         messages.append({"role": "user", "content": tool_results})
         if stop_loop:
@@ -378,6 +391,95 @@ def run_chat_turn(
     content = response.content if response is not None else []
     explanation = next((b.text for b in content if b.type == "text"), "")
     return ChatTurnResult(explanation=explanation, proposals=proposals, history=messages)
+
+
+# Friendly activity hints shown while a read tool runs, so the pre-text phase
+# of a turn is not a blank spinner. Keyed by read-tool name.
+_READ_TOOL_HINTS: dict[str, str] = {
+    "list_tasks": "your tasks",
+    "get_plan": "your plan",
+    "list_interviews": "your interviews",
+    "get_category_ranks": "your focus ranks",
+    "get_preferences": "your preferences",
+    "get_recent_outcomes": "recent outcomes",
+}
+
+
+def _read_status_message(content_blocks: list[Any]) -> str:
+    """One short "Reading ..." line for the read tools this round calls."""
+    subjects = [
+        _READ_TOOL_HINTS[b.name]
+        for b in content_blocks
+        if b.type == "tool_use" and b.name in _READ_TOOL_HINTS
+    ]
+    # De-dupe while keeping the model's call order.
+    seen: list[str] = []
+    for subject in subjects:
+        if subject not in seen:
+            seen.append(subject)
+    if not seen:
+        return "Thinking..."
+    if len(seen) == 1:
+        return f"Reading {seen[0]}..."
+    return f"Reading {', '.join(seen[:-1])} and {seen[-1]}..."
+
+
+StreamEvent = tuple[str, Any]
+
+
+def stream_chat_turn(
+    client: anthropic.Anthropic,
+    deps: ChatDeps,
+    day: date,
+    message: str,
+    history: list[dict[str, Any]] | None = None,
+) -> Iterator[StreamEvent]:
+    """Streaming twin of :func:`run_chat_turn`, yielding typed events.
+
+    Yields ``("delta", text)`` per streamed text chunk, ``("status", msg)``
+    before a round's read tools execute, and finally ``("result", ...)`` with
+    the same :class:`ChatTurnResult` the blocking path would have returned.
+    """
+    messages: list[dict[str, Any]] = list(history or [])
+    messages.append({"role": "user", "content": message})
+
+    proposals: list[dict[str, Any]] = []
+    chunks: list[str] = []
+    system = _system_prompt(deps)
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=4096,
+            system=system,
+            tools=cast(Any, TOOLS),
+            messages=cast(Any, messages),
+        ) as stream:
+            for text in stream.text_stream:
+                chunks.append(text)
+                yield ("delta", text)
+            final = stream.get_final_message()
+
+        messages.append({"role": "assistant", "content": final.content})
+
+        content = list(final.content)
+        if any(b.type == "tool_use" and b.name in _READ_TOOL_NAMES for b in content):
+            yield ("status", _read_status_message(content))
+
+        tool_results, stop_loop = _handle_tool_uses(content, deps, day, proposals)
+        if not tool_results:
+            break
+
+        messages.append({"role": "user", "content": tool_results})
+        if stop_loop:
+            break
+
+    yield (
+        "result",
+        ChatTurnResult(
+            explanation="".join(chunks), proposals=proposals, history=messages
+        ),
+    )
 
 
 # Common LLM slips -> real Category values. Exact enum values still win first.

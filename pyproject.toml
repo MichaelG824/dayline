@@ -71,6 +71,8 @@ strict = true
 
 # The google extra ships no type stubs/py.typed marker; GoogleCalendarClient
 # is the only caller and already narrows its surface to plain str/dict types.
+# ``follow_imports = "skip"`` matters when the extra IS installed: without it
+# mypy reads the untyped sources and strict mode flags every call into them.
 [[tool.mypy.overrides]]
 module = [
     "googleapiclient.*",
@@ -80,3 +82,4 @@ module = [
     "google_auth_httplib2.*",
 ]
 ignore_missing_imports = true
+follow_imports = "skip"
