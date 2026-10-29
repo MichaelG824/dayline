@@ -179,6 +179,7 @@ def _dict_to_task(d: dict[str, Any]) -> Task:
         recur_day=_opt_enum(Weekday, d.get("recur_day")),
         application_id=d.get("application_id"),
         interview_id=d.get("interview_id"),
+        problem_id=d.get("problem_id"),
     )
 
 
@@ -255,6 +256,7 @@ def _task_to_row(task: Task) -> dict[str, Any]:
         "recur_day": task.recur_day.value if task.recur_day else None,
         "application_id": task.application_id,
         "interview_id": task.interview_id,
+        "problem_id": task.problem_id,
     }
 
 

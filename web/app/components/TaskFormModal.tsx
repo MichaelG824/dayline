@@ -14,6 +14,9 @@ import {
 interface Props {
   day: string;
   defaultCategory?: string;
+  defaultName?: string;
+  // Links a newly created task to a LeetCode problem (a practice session).
+  problemId?: string;
   task?: TaskRow;
   onClose: () => void;
   onSaved: () => void;
@@ -25,9 +28,17 @@ function timeOf(fixedTime: string | null): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-export function TaskFormModal({ day, defaultCategory, task, onClose, onSaved }: Props) {
+export function TaskFormModal({
+  day,
+  defaultCategory,
+  defaultName,
+  problemId,
+  task,
+  onClose,
+  onSaved,
+}: Props) {
   const isEditing = !!task;
-  const [name, setName] = useState(task?.name ?? '');
+  const [name, setName] = useState(task?.name ?? defaultName ?? '');
   const [category, setCategory] = useState<string>(task?.category ?? defaultCategory ?? ALL_CATEGORIES[0]);
   const [priority, setPriority] = useState(task?.priority ?? '');
   const [duration, setDuration] = useState(task?.estDurationMin ?? 60);
@@ -61,6 +72,7 @@ export function TaskFormModal({ day, defaultCategory, task, onClose, onSaved }: 
           fixedTime: time ? `${day}T${time}:00` : null,
           recurs: recurs || undefined,
           recurDay: recurs === 'Weekly' ? recurDay : undefined,
+          problemId: problemId ?? null,
         });
       }
       onSaved();

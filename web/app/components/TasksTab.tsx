@@ -13,6 +13,7 @@ interface Props {
   categoryWeights: CategoryWeight[];
   loading: boolean;
   onTasksChanged: () => void;
+  onOpenProblem: (problemId: string) => void;
 }
 
 function TaskRow({
@@ -20,11 +21,13 @@ function TaskRow({
   onToggle,
   onEdit,
   onDelete,
+  onOpenProblem,
 }: {
   task: DayTask;
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onOpenProblem: (problemId: string) => void;
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40">
@@ -41,6 +44,15 @@ function TaskRow({
         {task.effectiveTime ? `${formatClockTime(task.effectiveTime)} · ` : ''}
         {formatDuration(task.estDurationMin)}
       </span>
+      {task.problemId && (
+        <button
+          onClick={() => onOpenProblem(task.problemId!)}
+          title="Open problem"
+          className="font-mono text-xs text-rose-600 dark:text-rose-400 hover:text-rose-500 dark:hover:text-rose-300 px-1"
+        >
+          &lt;/&gt;
+        </button>
+      )}
       <button
         onClick={onEdit}
         title="Edit"
@@ -59,7 +71,14 @@ function TaskRow({
   );
 }
 
-export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChanged }: Props) {
+export function TasksTab({
+  day,
+  dayTasks,
+  categoryWeights,
+  loading,
+  onTasksChanged,
+  onOpenProblem,
+}: Props) {
   const [modal, setModal] = useState<{ defaultCategory?: string; task?: DayTask } | null>(null);
 
   async function toggleDone(task: DayTask) {
@@ -114,6 +133,7 @@ export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChang
                   onToggle={() => toggleDone(t)}
                   onEdit={() => setModal({ task: t })}
                   onDelete={() => handleDelete(t)}
+                onOpenProblem={onOpenProblem}
                 />
               ))}
             </div>
@@ -134,6 +154,7 @@ export function TasksTab({ day, dayTasks, categoryWeights, loading, onTasksChang
                 onToggle={() => toggleDone(t)}
                 onEdit={() => setModal({ task: t })}
                 onDelete={() => handleDelete(t)}
+                onOpenProblem={onOpenProblem}
               />
             ))}
           </div>

@@ -52,8 +52,16 @@ def create_task(
     recur_day: str | None = None,
     application_id: str | None = None,
     interview_id: str | None = None,
+    problem_id: str | None = None,
 ) -> dict[str, Any]:
     cat = parse_category(category)
+    if problem_id is not None:
+        try:
+            ctx.problem_source.get_problem(problem_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"No problem {problem_id!r}"
+            ) from exc
     if priority is not None:
         prio = parse_priority(priority)
     else:
@@ -84,6 +92,7 @@ def create_task(
             recur_day=parse_weekday(recur_day) if recur_day else None,
             application_id=application_id,
             interview_id=interview_id,
+            problem_id=problem_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import {
   Application,
   CategoryWeight,
@@ -20,7 +21,12 @@ import { InterviewsTab } from './InterviewsTab';
 import { ChatTab } from './ChatTab';
 import { PomodoroTab } from './PomodoroTab';
 
-export type Tab = 'tasks' | 'interviews' | 'chat' | 'pomodoro';
+// Code-split: CodeMirror + markdown only load once the Problems tab opens.
+const ProblemsTab = dynamic(() => import('./problems/ProblemsTab').then((m) => m.ProblemsTab), {
+  loading: () => <p className="font-mono text-sm text-zinc-500">Loading…</p>,
+});
+
+export type Tab = 'tasks' | 'problems' | 'interviews' | 'chat' | 'pomodoro';
 
 interface Props {
   initialDay: string;
@@ -52,6 +58,7 @@ export function AppShell({
   const [categoryWeights, setCategoryWeights] = useState(initialCategoryWeights);
   const [interviews, setInterviews] = useState(initialInterviews);
   const [applications, setApplications] = useState(initialApplications);
+  const [openProblemId, setOpenProblemId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pomodoro = usePomodoro();
@@ -80,6 +87,11 @@ export function AppShell({
     setApplications(nextApplications);
   }
 
+  function openProblem(problemId: string) {
+    setOpenProblemId(problemId);
+    setTab('problems');
+  }
+
   const dayTasks = computeDayTasks(plan, tasks);
 
   return (
@@ -97,7 +109,7 @@ export function AppShell({
       <main className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 px-6 py-3">
           <nav className="flex gap-1">
-            {(['tasks', 'interviews', 'chat', 'pomodoro'] as Tab[]).map((t) => (
+            {(['tasks', 'problems', 'interviews', 'chat', 'pomodoro'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -131,6 +143,15 @@ export function AppShell({
               dayTasks={dayTasks}
               categoryWeights={categoryWeights}
               loading={loading}
+              onTasksChanged={() => refreshDay(day)}
+              onOpenProblem={openProblem}
+            />
+          )}
+          {tab === 'problems' && (
+            <ProblemsTab
+              day={day}
+              openProblemId={openProblemId}
+              onOpenProblem={setOpenProblemId}
               onTasksChanged={() => refreshDay(day)}
             />
           )}

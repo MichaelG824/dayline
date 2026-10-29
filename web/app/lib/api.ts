@@ -23,6 +23,7 @@ export interface TaskRow {
   recurDay: string | null;
   applicationId: string | null;
   interviewId: string | null;
+  problemId: string | null;
 }
 
 export interface PlanResponse {
@@ -181,6 +182,7 @@ export interface CreateTaskInput {
   recurDay?: string;
   applicationId?: string | null;
   interviewId?: string | null;
+  problemId?: string | null;
 }
 
 export async function createTask(input: CreateTaskInput): Promise<TaskRow> {
@@ -397,4 +399,152 @@ export async function signOut(): Promise<void> {
   if (typeof window !== 'undefined') {
     window.location.replace('/login');
   }
+}
+
+// ---- Problems (LeetCode tracker) -------------------------------------------
+
+export interface Problem {
+  id: string;
+  number: number | null;
+  slug: string | null;
+  title: string;
+  url: string | null;
+  difficulty: string;
+  status: string;
+  confidence: number | null;
+  notes: string;
+  starred: boolean;
+  tagIds: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastAttemptedAt: string | null;
+  solvedAt: string | null;
+}
+
+export interface Solution {
+  id: string;
+  problemId: string;
+  title: string;
+  language: string;
+  code: string;
+  timeComplexity: string | null;
+  spaceComplexity: string | null;
+  explanation: string;
+  isOptimal: boolean;
+  createdAt: string | null;
+}
+
+export interface ProblemDetail extends Problem {
+  solutions: Solution[];
+  // Practice sessions (Leetcode tasks) linked to this problem.
+  tasks: TaskRow[];
+}
+
+export interface ProblemTag {
+  id: string;
+  name: string;
+  color: string | null;
+  problemCount: number;
+}
+
+// Every field optional so PATCH can send only what changed; null clears.
+export interface ProblemInput {
+  title?: string;
+  difficulty?: string;
+  status?: string;
+  number?: number | null;
+  slug?: string | null;
+  url?: string | null;
+  confidence?: number | null;
+  notes?: string;
+  starred?: boolean;
+  tagIds?: string[];
+}
+
+export interface SolutionInput {
+  title: string;
+  language: string;
+  code: string;
+  timeComplexity: string | null;
+  spaceComplexity: string | null;
+  explanation: string;
+  isOptimal: boolean;
+}
+
+export interface ProblemTagInput {
+  name: string;
+  color: string | null;
+}
+
+function jsonInit(method: string, body: unknown): RequestInit {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
+
+export async function getProblems(): Promise<Problem[]> {
+  const res = await apiFetch('/api/problems');
+  return (await checkOk(res, 'Failed to load problems')).json();
+}
+
+export async function getProblem(problemId: string): Promise<ProblemDetail> {
+  const res = await apiFetch(`/api/problems/${problemId}`);
+  return (await checkOk(res, 'Failed to load problem')).json();
+}
+
+export async function createProblem(input: ProblemInput): Promise<Problem> {
+  const res = await apiFetch('/api/problems', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to create problem')).json();
+}
+
+export async function updateProblem(problemId: string, input: ProblemInput): Promise<Problem> {
+  const res = await apiFetch(`/api/problems/${problemId}`, jsonInit('PATCH', input));
+  return (await checkOk(res, 'Failed to update problem')).json();
+}
+
+export async function deleteProblem(problemId: string): Promise<void> {
+  const res = await apiFetch(`/api/problems/${problemId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete problem');
+}
+
+export async function exportProblems(): Promise<unknown> {
+  const res = await apiFetch('/api/problems/export');
+  return (await checkOk(res, 'Failed to export problems')).json();
+}
+
+export async function createSolution(problemId: string, input: SolutionInput): Promise<Solution> {
+  const res = await apiFetch(`/api/problems/${problemId}/solutions`, jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to add solution')).json();
+}
+
+export async function updateSolution(solutionId: string, input: SolutionInput): Promise<Solution> {
+  const res = await apiFetch(`/api/solutions/${solutionId}`, jsonInit('PUT', input));
+  return (await checkOk(res, 'Failed to save solution')).json();
+}
+
+export async function deleteSolution(solutionId: string): Promise<void> {
+  const res = await apiFetch(`/api/solutions/${solutionId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete solution');
+}
+
+export async function getProblemTags(): Promise<ProblemTag[]> {
+  const res = await apiFetch('/api/problem-tags');
+  return (await checkOk(res, 'Failed to load tags')).json();
+}
+
+export async function createProblemTag(input: ProblemTagInput): Promise<ProblemTag> {
+  const res = await apiFetch('/api/problem-tags', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to create tag')).json();
+}
+
+export async function updateProblemTag(tagId: string, input: ProblemTagInput): Promise<ProblemTag> {
+  const res = await apiFetch(`/api/problem-tags/${tagId}`, jsonInit('PUT', input));
+  return (await checkOk(res, 'Failed to save tag')).json();
+}
+
+export async function deleteProblemTag(tagId: string): Promise<void> {
+  const res = await apiFetch(`/api/problem-tags/${tagId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete tag');
 }

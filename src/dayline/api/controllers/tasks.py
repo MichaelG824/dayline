@@ -33,6 +33,7 @@ class TaskCreateRequest(BaseModel):
     recurDay: str | None = None
     applicationId: str | None = None
     interviewId: str | None = None
+    problemId: str | None = None
 
 
 @router.post("/api/tasks", status_code=201)
@@ -53,6 +54,7 @@ def create_task(
         recur_day=body.recurDay,
         application_id=body.applicationId,
         interview_id=body.interviewId,
+        problem_id=body.problemId,
     )
 
 

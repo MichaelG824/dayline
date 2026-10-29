@@ -47,6 +47,7 @@ from dayline.api.controllers import (
     outcomes,
     plan,
     preferences,
+    problems,
     tasks,
 )
 
@@ -78,6 +79,7 @@ def create_app() -> FastAPI:
         chat,
         preferences,
         outcomes,
+        problems,
     ):
         app.include_router(controller.router)
 
