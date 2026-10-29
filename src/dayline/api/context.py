@@ -38,6 +38,7 @@ from dayline.adapters.application_source import (  # noqa: E402
 )
 from dayline.adapters.calendar import GoogleCalendarClient, InMemoryCalendar  # noqa: E402
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
+from dayline.adapters.problem_source import SupabaseProblemSource  # noqa: E402
 from dayline.adapters.supabase_client import get_supabase_client  # noqa: E402
 from dayline.adapters.task_source import SupabaseTaskSource  # noqa: E402
 
@@ -58,6 +59,7 @@ class AppContext:
     task_source: SupabaseTaskSource
     application_source: SupabaseApplicationSource
     interview_source: SupabaseInterviewSource
+    problem_source: SupabaseProblemSource
     anthropic_client: anthropic.Anthropic
     calendars: dict[date, InMemoryCalendar] = field(default_factory=dict)
     google_calendar: GoogleCalendarClient | None = None
@@ -93,6 +95,7 @@ def build_context() -> AppContext:
         task_source=SupabaseTaskSource(client),
         application_source=SupabaseApplicationSource(client),
         interview_source=SupabaseInterviewSource(client),
+        problem_source=SupabaseProblemSource(client),
         anthropic_client=anthropic.Anthropic(),
         google_calendar=_google_calendar_from_env(),
     )

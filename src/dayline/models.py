@@ -107,6 +107,24 @@ class InterviewCategory(StrEnum):
     LEETCODE = "Leetcode"
 
 
+class Difficulty(StrEnum):
+    """LeetCode difficulty of a :class:`Problem`."""
+
+    EASY = "Easy"
+    MEDIUM = "Medium"
+    HARD = "Hard"
+
+
+class ProblemStatus(StrEnum):
+    """Where a :class:`Problem` stands in practice. Distinct from task
+    :class:`Status`: a problem outlives any one scheduled practice session."""
+
+    TODO = "To do"
+    ATTEMPTED = "Attempted"
+    SOLVED = "Solved"
+    REVIEW = "Review"
+
+
 class Recurrence(StrEnum):
     """How a task repeats. ``None`` on a task means one-shot (the default)."""
 
@@ -171,6 +189,9 @@ class Task:
     # Optional link to a specific Interview (a particular round/time), used to
     # bump this task's effective priority as that interview approaches.
     interview_id: str | None = None
+    # Optional link to the LeetCode Problem this task practices (e.g. a
+    # "Solve: Two Sum" block), so the plan can open the problem directly.
+    problem_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.est_duration_min <= 0:
@@ -222,6 +243,60 @@ class Interview:
     # a duplicate entry). Excluded from list_upcoming(); calendar discovery
     # skips a hidden interview's event so it doesn't reappear.
     hidden: bool = False
+
+
+@dataclass(slots=True)
+class ProblemTag:
+    """A topic tag (e.g. "Sliding Window") attachable to many problems."""
+
+    name: str
+    id: str
+    # Hex color like "#2563eb"; None renders as a neutral chip.
+    color: str | None = None
+
+
+@dataclass(slots=True)
+class Problem:
+    """A LeetCode problem being practiced. Deliberately not a :class:`Task`:
+    a problem is the durable thing (notes, tags, solutions) while a task is
+    one scheduled session working on it - tasks link here via
+    :attr:`Task.problem_id`."""
+
+    title: str
+    difficulty: Difficulty
+    id: str
+    status: ProblemStatus = ProblemStatus.TODO
+    number: int | None = None
+    slug: str | None = None
+    url: str | None = None
+    # 1 (shaky) .. 5 (confident); None means not rated yet.
+    confidence: int | None = None
+    notes: str = ""
+    starred: bool = False
+    tag_ids: list[str] = field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    # Stamped by the service on status transitions (see
+    # api/services/problems.py), never by the client.
+    last_attempted_at: datetime | None = None
+    solved_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class Solution:
+    """One approach to a :class:`Problem`. A problem holds many, so
+    "different ways of solving it" is first-class rather than one code field."""
+
+    problem_id: str
+    title: str
+    language: str
+    code: str
+    id: str
+    time_complexity: str | None = None
+    space_complexity: str | None = None
+    explanation: str = ""
+    is_optimal: bool = False
+    created_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -10,8 +10,10 @@ from fastapi import HTTPException
 
 from dayline.models import (
     Category,
+    Difficulty,
     InterviewCategory,
     Priority,
+    ProblemStatus,
     Recurrence,
     Status,
     Weekday,
@@ -68,3 +70,19 @@ def parse_weekday(value: str) -> Weekday:
         return Weekday(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Unknown weekday {value!r}") from exc
+
+
+def parse_difficulty(value: str) -> Difficulty:
+    try:
+        return Difficulty(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown difficulty {value!r}") from exc
+
+
+def parse_problem_status(value: str) -> ProblemStatus:
+    try:
+        return ProblemStatus(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown problem status {value!r}"
+        ) from exc
