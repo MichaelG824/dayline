@@ -11,6 +11,8 @@ auto-apply because Claude called a tool.
 from __future__ import annotations
 
 import contextlib
+import json
+from collections.abc import Iterator
 from datetime import date
 from typing import Any
 
@@ -24,7 +26,7 @@ from dayline.adapters.outcomes import (
     log_outcome,
 )
 from dayline.adapters.preferences import get_preferences, patch_preferences
-from dayline.api.chat import ChatDeps, apply_proposal, run_chat_turn
+from dayline.api.chat import ChatDeps, apply_proposal, run_chat_turn, stream_chat_turn
 from dayline.api.context import AppContext
 from dayline.api.parsing import parse_category
 from dayline.api.serializers import interview_json
@@ -86,6 +88,59 @@ def run_chat(
         "proposals": result.proposals,
         "history": result.history,
     }
+
+
+def _json_default(obj: Any) -> Any:
+    """Serialize Anthropic SDK content blocks (pydantic models) in ``history``.
+
+    The non-streaming endpoint gets this for free from FastAPI's encoder; this
+    path hand-rolls its JSON, so it needs the same conversion.
+    """
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json", exclude_none=True)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    """One SSE frame. Hand-formatted so no extra dependency is needed."""
+    return f"data: {json.dumps(payload, default=_json_default)}\n\n"
+
+
+def stream_chat(
+    ctx: AppContext,
+    day: date,
+    message: str,
+    history: list[dict[str, Any]] | None,
+) -> Iterator[str]:
+    """SSE twin of :func:`run_chat`: token deltas plus read-phase status hints.
+
+    The terminal ``done`` frame carries the same payload ``run_chat`` returns,
+    so the client ends a streamed turn in exactly the non-streaming state.
+    """
+    try:
+        for kind, value in stream_chat_turn(
+            ctx.anthropic_client,
+            build_chat_deps(ctx),
+            day,
+            message,
+            history=history,
+        ):
+            if kind == "delta":
+                yield _sse({"type": "delta", "text": value})
+            elif kind == "status":
+                yield _sse({"type": "status", "message": value})
+            elif kind == "result":
+                yield _sse(
+                    {
+                        "type": "done",
+                        "explanation": value.explanation,
+                        "proposals": value.proposals,
+                        "history": value.history,
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001 - terminal frame beats a dead stream
+        yield _sse({"type": "error", "message": str(exc) or "Chat stream failed"})
 
 
 def confirm_chat(

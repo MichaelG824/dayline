@@ -360,6 +360,75 @@ export async function sendChatMessage(
   return (await checkOk(res, 'Failed to reach chat')).json();
 }
 
+export interface ChatStreamHandlers {
+  onStatus?: (message: string) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (res: ChatResponse) => void;
+  onError?: (message: string) => void;
+}
+
+// Streaming twin of sendChatMessage. Reads the SSE frames the API emits
+// (`data: <json>\n\n`) and dispatches them; the terminal `done` frame carries
+// the same payload sendChatMessage resolves with.
+export async function streamChatMessage(
+  day: string,
+  message: string,
+  history: unknown[] | undefined,
+  handlers: ChatStreamHandlers
+): Promise<void> {
+  const res = await apiFetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ day, message, history }),
+  });
+  if (!res.ok) {
+    await checkOk(res, 'Failed to reach chat');
+  }
+  if (!res.body) throw new Error('Failed to reach chat');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const dispatch = (frame: string): void => {
+    const line = frame.split('\n').find((l) => l.startsWith('data:'));
+    if (!line) return;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(line.slice(5).trim());
+    } catch {
+      return; // ignore a frame we can't parse rather than killing the stream
+    }
+    switch (payload.type) {
+      case 'status':
+        handlers.onStatus?.(String(payload.message ?? ''));
+        break;
+      case 'delta':
+        handlers.onDelta?.(String(payload.text ?? ''));
+        break;
+      case 'done':
+        handlers.onDone?.(payload as unknown as ChatResponse);
+        break;
+      case 'error':
+        handlers.onError?.(String(payload.message ?? 'Chat stream failed'));
+        break;
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split = buffer.indexOf('\n\n');
+    while (split !== -1) {
+      dispatch(buffer.slice(0, split));
+      buffer = buffer.slice(split + 2);
+      split = buffer.indexOf('\n\n');
+    }
+  }
+  if (buffer.trim()) dispatch(buffer);
+}
+
 export async function confirmProposals(
   day: string,
   proposals: Proposal[],
