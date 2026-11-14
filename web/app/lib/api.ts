@@ -132,6 +132,17 @@ function redirectForAuth(status: number): void {
   }
 }
 
+// An HTTP error with its status, so callers can tell e.g. a save conflict
+// (409) from a failure.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 async function checkOk(res: Response, message: string): Promise<Response> {
   if (res.status === 401 || res.status === 403) {
     redirectForAuth(res.status);
@@ -144,7 +155,7 @@ async function checkOk(res: Response, message: string): Promise<Response> {
     } catch {
       // non-JSON error body - keep the generic message
     }
-    throw new Error(detail || message);
+    throw new ApiError(detail || message, res.status);
   }
   return res;
 }
@@ -651,6 +662,12 @@ export interface MockSessionSummary {
   questionId: string | null;
   rubricId: string | null;
   guidelineId: string | null;
+  kind: 'transcript' | 'live';
+  status: 'live' | 'ended';
+  templateId: string | null;
+  pack: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
   overallScore: number | null;
   createdAt: string | null;
 }
@@ -759,6 +776,95 @@ export interface MockSessionDetail extends MockSessionSummary {
   // The scorecard's weak areas as propose_new_task proposals for confirmProposals.
   proposals: Proposal[];
   tasks: TaskRow[];
+  // Live sessions only.
+  templateTitle?: string | null;
+  taskMd?: string;
+  durationMin?: number | null;
+  // The file the workspace opens first.
+  openPath?: string | null;
+  testReport?: TestReport | null;
+  finalDiff?: string;
+  events?: MockEvent[];
+}
+
+// Live sessions (a sandbox per session). Mirrors services/mock_live.py and
+// the sandbox runner's JSON.
+export interface LiveTemplate {
+  id: string;
+  title: string;
+  pack: string;
+  roundType: string;
+  durationMin: number;
+  summary: string;
+}
+
+export interface LivePack {
+  name: string;
+  displayName: string;
+  editorLanguage: string;
+  state: 'pending' | 'building' | 'ready' | 'failed';
+  error: string | null;
+}
+
+export interface LiveAvailability {
+  available: boolean;
+  reason: string | null;
+  templates: LiveTemplate[];
+  packs: LivePack[];
+}
+
+export interface LiveSessionInput {
+  templateId: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+}
+
+export interface SandboxStatus {
+  // stopped: idle too long or out of time (files kept); gone: deleted.
+  state: 'running' | 'stopped' | 'gone';
+  expiresAt?: string;
+  idleTimeoutS?: number;
+  editorLanguage: string | null;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  version: string;
+}
+
+export interface FileContent {
+  path: string;
+  content: string;
+  version: string;
+}
+
+export interface TestCase {
+  name: string;
+  classname: string;
+  outcome: 'passed' | 'failed' | 'error' | 'skipped';
+  message: string;
+  duration_s: number;
+}
+
+export interface TestReport {
+  // error: the tests could not run at all; timeout: stopped at the limit.
+  status: 'passed' | 'failed' | 'error' | 'timeout';
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+  duration_s: number;
+  exit_code: number | null;
+  output: string;
+  cases: TestCase[];
+}
+
+export interface MockEvent {
+  kind: 'session_started' | 'file_saved' | 'tests_run' | 'command_run' | 'session_ended';
+  data: Record<string, unknown>;
+  at: string | null;
 }
 
 export interface MockSessionInput {
@@ -871,4 +977,70 @@ export async function gradeMockSession(sessionId: string): Promise<MockSessionDe
 export async function deleteMockSession(sessionId: string): Promise<void> {
   const res = await apiFetch(`/api/mock/sessions/${sessionId}`, { method: 'DELETE' });
   await checkOk(res, 'Failed to delete session');
+}
+
+export async function getLiveAvailability(): Promise<LiveAvailability> {
+  const res = await apiFetch('/api/mock/live');
+  return (await checkOk(res, 'Failed to load practice repos')).json();
+}
+
+export async function startLiveSession(input: LiveSessionInput): Promise<MockSessionDetail> {
+  const res = await apiFetch('/api/mock/live/sessions', jsonInit('POST', input));
+  return (await checkOk(res, 'Could not start the session')).json();
+}
+
+export async function getSandboxStatus(sessionId: string): Promise<SandboxStatus> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/sandbox`);
+  return (await checkOk(res, 'Failed to load the sandbox')).json();
+}
+
+export async function resumeSandbox(sessionId: string): Promise<SandboxStatus> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/resume`, { method: 'POST' });
+  return (await checkOk(res, 'Could not resume the sandbox')).json();
+}
+
+function filePath(sessionId: string, path: string): string {
+  return `/api/mock/sessions/${sessionId}/files/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+export async function listWorkspaceFiles(sessionId: string): Promise<WorkspaceFile[]> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/files`);
+  return (await checkOk(res, 'Failed to list files')).json();
+}
+
+export async function readWorkspaceFile(sessionId: string, path: string): Promise<FileContent> {
+  const res = await apiFetch(filePath(sessionId, path));
+  return (await checkOk(res, `Could not open ${path}`)).json();
+}
+
+// baseVersion: the version the editor loaded ('' for a new file). A file that
+// changed since then fails with ApiError status 409.
+export async function writeWorkspaceFile(
+  sessionId: string,
+  path: string,
+  content: string,
+  baseVersion: string | null,
+): Promise<{ path: string; version: string }> {
+  const res = await apiFetch(filePath(sessionId, path), jsonInit('PUT', { content, baseVersion }));
+  return (await checkOk(res, `Could not save ${path}`)).json();
+}
+
+export async function runWorkspaceTests(sessionId: string): Promise<TestReport> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/tests`, { method: 'POST' });
+  return (await checkOk(res, 'Could not run the tests')).json();
+}
+
+export async function endLiveSession(sessionId: string): Promise<MockSessionDetail> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/end`, { method: 'POST' });
+  return (await checkOk(res, 'Could not end the session')).json();
+}
+
+// The terminal WebSocket. Same origin as the API (the Next dev server and
+// Caddy both proxy /api, upgrades included).
+export function terminalUrl(sessionId: string, cols: number, rows: number): string {
+  const base = API || window.location.origin;
+  const url = new URL(`/api/mock/sessions/${sessionId}/terminal`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.search = `cols=${cols}&rows=${rows}`;
+  return url.toString();
 }

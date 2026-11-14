@@ -13,7 +13,7 @@ import { sql } from '@codemirror/lang-sql';
 import { useIsDark } from '../../lib/useIsDark';
 
 // Map a language id (see LANGUAGES in lib/problems.ts) to its grammar.
-function languageExtensions(language: string): Extension[] {
+export function languageExtensions(language: string): Extension[] {
   switch (language) {
     case 'python':
       return [python()];

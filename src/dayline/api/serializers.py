@@ -16,6 +16,7 @@ from dayline.adapters.task_source import SupabaseTaskSource
 from dayline.models import (
     Application,
     Interview,
+    MockEvent,
     MockGuideline,
     MockQuestion,
     MockRubric,
@@ -243,6 +244,16 @@ def mock_session_json(session: MockSession, scorecard: Scorecard | None) -> dict
         "questionId": session.question_id,
         "rubricId": session.rubric_id,
         "guidelineId": session.guideline_id,
+        "kind": session.kind.value,
+        "status": session.status.value,
+        "templateId": session.template_id,
+        "pack": session.pack,
+        "startedAt": _iso(session.started_at),
+        "endedAt": _iso(session.ended_at),
         "overallScore": scorecard.overall_score if scorecard else None,
         "createdAt": _iso(session.created_at),
     }
+
+
+def mock_event_json(event: MockEvent) -> dict[str, Any]:
+    return {"kind": event.kind.value, "data": event.data, "at": _iso(event.at)}

@@ -43,6 +43,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.9",
     "debugpy>=1.8",
+    "docker>=7.1",
 ]
 
 [project.scripts]
@@ -52,22 +53,27 @@ dayline = "dayline.scheduler.run:main"
 packages = ["src/dayline"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["tests", "sandbox/runner/tests"]
+pythonpath = ["src", "sandbox/runner/src"]
 addopts = "-ra"
+markers = [
+    "docker: needs a Docker daemon; runs only with RUN_DOCKER_TESTS=1",
+]
 
 [tool.ruff]
-src = ["src", "tests"]
+src = ["src", "tests", "sandbox/runner/src", "sandbox/runner/tests"]
 line-length = 100
 target-version = "py311"
+# Practice-repo templates are candidate code (with deliberate bugs), not ours.
+extend-exclude = ["src/dayline/mock/templates"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-mypy_path = "src"
-packages = ["dayline"]
+mypy_path = "src:sandbox/runner/src"
+packages = ["dayline", "dayline_runner"]
 strict = true
 
 # The google extra ships no type stubs/py.typed marker; GoogleCalendarClient
@@ -84,3 +90,8 @@ module = [
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+# The Docker SDK ships no type information; only dayline_runner.manager uses it.
+[[tool.mypy.overrides]]
+module = ["docker", "docker.*"]
+ignore_missing_imports = true

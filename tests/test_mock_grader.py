@@ -10,7 +10,7 @@ from dayline.mock.grader import (
     MAX_ATTEMPTS,
     GradeInput,
     GradingError,
-    grade_transcript,
+    grade,
     quote_in_transcript,
     weak_area_proposals,
 )
@@ -29,7 +29,7 @@ from tests.mock_fakes import (
 
 def _grade(client: FakeAnthropic, transcript: str = TRANSCRIPT) -> Any:
     data = GradeInput(transcript=transcript, rubric=small_rubric())
-    return grade_transcript(cast(Any, client), "test-model", data, "session-1")
+    return grade(cast(Any, client), "test-model", data, "session-1")
 
 
 def test_valid_card_is_built_in_rubric_order_with_weighted_overall() -> None:
@@ -110,11 +110,36 @@ def test_duplicate_criterion_is_rejected() -> None:
 
 
 @pytest.mark.parametrize("transcript", ["", "   \n"])
-def test_empty_transcript_is_rejected_without_a_model_call(transcript: str) -> None:
+def test_nothing_to_grade_is_rejected_without_a_model_call(transcript: str) -> None:
     client = FakeAnthropic.replying()
-    with pytest.raises(GradingError, match="empty"):
+    with pytest.raises(GradingError, match="nothing to grade"):
         _grade(client, transcript)
     assert client.messages.calls == []
+
+
+WORK = """## Timeline (mm:ss from the start)
+00:00 session started
+02:10 ran tests: failed (3 passed, 5 failed, 0 errors)
+
+## Diff against the starting repo
+-            if loan.book_id == book_id and loan.member_id == member_id and loan.is_open:
++            if loan.book_id == book_id and loan.is_open:"""
+
+
+def test_a_live_session_is_graded_on_its_work_record_alone() -> None:
+    payload = scorecard_payload()
+    payload["criteria"][0]["evidence"] = ["02:10 ran tests: failed"]
+    diff_line = "+            if loan.book_id == book_id and loan.is_open:"
+    payload["criteria"][1]["evidence"] = [diff_line]
+    client = FakeAnthropic.replying(("submit_scorecard", payload))
+    data = GradeInput(transcript="", rubric=small_rubric(), work=WORK)
+    card = grade(cast(Any, client), "test-model", data, "session-1")
+
+    # Quotes from the timeline and the diff count as verified evidence.
+    assert [e.verified for c in card.criteria for e in c.evidence] == [True, True]
+    prompt = client.messages.calls[0]["messages"][0]["content"]
+    assert "(none - this session had no conversation)" in prompt
+    assert "<work>" in prompt and "ran tests: failed" in prompt
 
 
 def test_weak_areas_are_cleaned_and_become_linked_task_proposals() -> None:

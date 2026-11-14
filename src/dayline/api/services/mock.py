@@ -9,6 +9,7 @@ back as ``propose_new_task`` proposals for the existing chat confirm path.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import uuid
 from datetime import date
@@ -17,9 +18,11 @@ from typing import Any
 import anthropic
 from fastapi import HTTPException
 
+from dayline.adapters.sandbox import SandboxRequestError, SandboxUnavailable
 from dayline.api.context import AppContext
 from dayline.api.parsing import parse_mock_question_source, parse_mock_round_type
 from dayline.api.serializers import (
+    mock_event_json,
     mock_guideline_json,
     mock_question_json,
     mock_rubric_json,
@@ -28,14 +31,18 @@ from dayline.api.serializers import (
     task_json,
 )
 from dayline.mock import grader_model, mock_model
-from dayline.mock.grader import GradeInput, GradingError, grade_transcript, weak_area_proposals
+from dayline.mock.grader import GradeInput, GradingError, grade, weak_area_proposals
 from dayline.mock.ingest import ExtractionError, extract_questions, find_similar
+from dayline.mock.templates import builtin_templates
+from dayline.mock.worklog import work_record
 from dayline.models import (
     MockGuideline,
     MockQuestion,
     MockRoundType,
     MockRubric,
     MockSession,
+    MockSessionKind,
+    MockSessionStatus,
     RubricCriterion,
 )
 
@@ -359,17 +366,48 @@ def list_sessions(ctx: AppContext) -> list[dict[str, Any]]:
 
 def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
     """The full record: transcript, latest scorecard, its weak areas as
-    proposals, and the prep tasks already created from them."""
+    proposals, and the prep tasks already created from them. A live session
+    also carries its task, events, last test run, and final diff (its
+    sandbox's state comes from ``GET /api/mock/sessions/{id}/sandbox``)."""
     session = _get_session(ctx, session_id)
     card = ctx.mock_source.latest_scorecards().get(session_id)
     linked = [t for t in ctx.task_source.list_tasks() if t.mock_session_id == session_id]
-    return {
+    detail = {
         **mock_session_json(session, card),
         "transcript": session.transcript,
         "scorecard": scorecard_json(card) if card else None,
         "proposals": weak_area_proposals(card) if card else [],
         "tasks": [task_json(t, ctx.task_source) for t in linked],
     }
+    if session.kind is MockSessionKind.LIVE:
+        template = builtin_templates().get(session.template_id or "")
+        detail |= {
+            "templateTitle": template.title if template else None,
+            "taskMd": template.task_md if template else "",
+            "durationMin": template.duration_min if template else None,
+            "openPath": template.open_path if template else None,
+            "testReport": session.test_report,
+            "finalDiff": session.final_diff,
+            "events": [mock_event_json(e) for e in ctx.mock_source.list_events(session_id)],
+        }
+    return detail
+
+
+def check_session_refs(
+    ctx: AppContext, question_id: str | None, rubric_id: str | None, guideline_id: str | None
+) -> None:
+    """404 when a referenced question, rubric, or guideline does not exist."""
+    lookups = (
+        ("question", question_id, ctx.mock_source.get_question),
+        ("rubric", rubric_id, ctx.mock_source.get_rubric),
+        ("guideline", guideline_id, ctx.mock_source.get_guideline),
+    )
+    for kind, item_id, getter in lookups:
+        if item_id:
+            try:
+                getter(item_id)
+            except KeyError as exc:
+                raise _not_found(kind, item_id) from exc
 
 
 def create_session(
@@ -382,17 +420,7 @@ def create_session(
 ) -> dict[str, Any]:
     if not transcript.strip():
         raise HTTPException(status_code=400, detail="Paste a transcript first")
-    lookups = (
-        ("question", question_id, ctx.mock_source.get_question),
-        ("rubric", rubric_id, ctx.mock_source.get_rubric),
-        ("guideline", guideline_id, ctx.mock_source.get_guideline),
-    )
-    for kind, item_id, getter in lookups:
-        if item_id:
-            try:
-                getter(item_id)
-            except KeyError as exc:
-                raise _not_found(kind, item_id) from exc
+    check_session_refs(ctx, question_id, rubric_id, guideline_id)
     session = MockSession(
         id=str(uuid.uuid4()),
         title=title.strip() or "Pasted transcript",
@@ -408,6 +436,8 @@ def create_session(
 def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
     """Grade (or re-grade) a session; each run stores a new scorecard."""
     session = _get_session(ctx, session_id)
+    if session.status is MockSessionStatus.LIVE:
+        raise HTTPException(status_code=409, detail="End the session before grading it")
     if not session.rubric_id:
         raise HTTPException(status_code=400, detail="Pick a rubric before grading")
     try:
@@ -428,10 +458,14 @@ def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
             question = None
 
     data = GradeInput(
-        transcript=session.transcript, rubric=rubric, guideline=guideline, question=question
+        transcript=session.transcript,
+        rubric=rubric,
+        guideline=guideline,
+        question=question,
+        work=work_record(session, ctx.mock_source.list_events(session_id)),
     )
     try:
-        card = grade_transcript(ctx.anthropic_client, grader_model(), data, session.id)
+        card = grade(ctx.anthropic_client, grader_model(), data, session.id)
     except GradingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except anthropic.APIError as exc:
@@ -441,4 +475,12 @@ def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
 
 
 def delete_session(ctx: AppContext, session_id: str) -> None:
+    try:
+        session = ctx.mock_source.get_session(session_id)
+    except KeyError:
+        return
+    if session.kind is MockSessionKind.LIVE and ctx.sandbox is not None:
+        # Best effort: the runner's reaper deletes anything left behind.
+        with contextlib.suppress(SandboxUnavailable, SandboxRequestError):
+            ctx.sandbox.destroy(session_id)
     ctx.mock_source.delete_session(session_id)

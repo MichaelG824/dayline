@@ -1,0 +1,7 @@
+name = "python"
+display_name = "Python 3.12"
+# A CodeMirror language id (web/app/components/problems/CodeEditor.tsx).
+editor_language = "python"
+# {junit} is where the runner reads JUnit XML results from.
+test_cmd = "python -m pytest -q -p no:cacheprovider --junitxml={junit}"
+test_timeout_s = 60

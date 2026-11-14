@@ -40,6 +40,7 @@ from dayline.adapters.calendar import GoogleCalendarClient, InMemoryCalendar  # 
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
 from dayline.adapters.mock_source import SupabaseMockSource  # noqa: E402
 from dayline.adapters.problem_source import SupabaseProblemSource  # noqa: E402
+from dayline.adapters.sandbox import SandboxClient, runner_from_env  # noqa: E402
 from dayline.adapters.supabase_client import get_supabase_client  # noqa: E402
 from dayline.adapters.task_source import SupabaseTaskSource  # noqa: E402
 
@@ -63,6 +64,9 @@ class AppContext:
     problem_source: SupabaseProblemSource
     mock_source: SupabaseMockSource
     anthropic_client: anthropic.Anthropic
+    # The sandbox runner for live mock sessions; None when SANDBOX_RUNNER_URL
+    # is unset (live sessions are then unavailable, everything else works).
+    sandbox: SandboxClient | None = None
     calendars: dict[date, InMemoryCalendar] = field(default_factory=dict)
     google_calendar: GoogleCalendarClient | None = None
 
@@ -100,6 +104,7 @@ def build_context() -> AppContext:
         problem_source=SupabaseProblemSource(client),
         mock_source=SupabaseMockSource(client),
         anthropic_client=anthropic.Anthropic(),
+        sandbox=runner_from_env(),
         google_calendar=_google_calendar_from_env(),
     )
 

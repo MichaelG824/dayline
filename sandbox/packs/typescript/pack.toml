@@ -1,0 +1,7 @@
+name = "typescript"
+display_name = "TypeScript (Node 22)"
+# A CodeMirror language id (web/app/components/problems/CodeEditor.tsx).
+editor_language = "typescript"
+# {junit} is where the runner reads JUnit XML results from.
+test_cmd = "vitest run --reporter=default --reporter=junit --outputFile.junit={junit}"
+test_timeout_s = 60

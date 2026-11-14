@@ -13,6 +13,7 @@ chat confirm path.
 from __future__ import annotations
 
 import copy
+import uuid
 from datetime import UTC, date, datetime
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
@@ -20,12 +21,16 @@ from dayline.models import (
     Category,
     CriterionScore,
     Evidence,
+    MockEvent,
+    MockEventKind,
     MockGuideline,
     MockQuestion,
     MockQuestionSource,
     MockRoundType,
     MockRubric,
     MockSession,
+    MockSessionKind,
+    MockSessionStatus,
     RubricCriterion,
     Scorecard,
     WeakArea,
@@ -84,8 +89,16 @@ class MockSource(Protocol):
 
     def create_session(self, session: MockSession) -> MockSession: ...
 
+    def update_session(self, session: MockSession) -> MockSession: ...
+
     def delete_session(self, session_id: str) -> None:
-        """Delete a session and its scorecards."""
+        """Delete a session, its scorecards, and its events."""
+        ...
+
+    def add_event(self, event: MockEvent) -> MockEvent: ...
+
+    def list_events(self, session_id: str) -> list[MockEvent]:
+        """A session's events, oldest first."""
         ...
 
     def create_scorecard(self, scorecard: Scorecard) -> Scorecard: ...
@@ -119,6 +132,7 @@ class InMemoryMockSource:
         self._guidelines = {g.id: copy.deepcopy(g) for g in guidelines or []}
         self._sessions = {s.id: copy.deepcopy(s) for s in sessions or []}
         self._scorecards: list[Scorecard] = []
+        self._events: list[MockEvent] = []
 
     @staticmethod
     def _stamp_new(item: _T) -> _T:
@@ -216,9 +230,30 @@ class InMemoryMockSource:
         self._sessions[stored.id] = stored
         return copy.deepcopy(stored)
 
+    def update_session(self, session: MockSession) -> MockSession:
+        if session.id not in self._sessions:
+            raise KeyError(session.id)
+        stored = self._stamp_update(session, self._sessions[session.id])
+        self._sessions[stored.id] = stored
+        return copy.deepcopy(stored)
+
     def delete_session(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
         self._scorecards = [c for c in self._scorecards if c.session_id != session_id]
+        self._events = [e for e in self._events if e.session_id != session_id]
+
+    def add_event(self, event: MockEvent) -> MockEvent:
+        if event.session_id not in self._sessions:
+            raise KeyError(event.session_id)
+        stored = copy.deepcopy(event)
+        stored.id = stored.id or str(uuid.uuid4())
+        stored.at = stored.at or datetime.now(UTC)
+        self._events.append(stored)
+        return copy.deepcopy(stored)
+
+    def list_events(self, session_id: str) -> list[MockEvent]:
+        events = [copy.deepcopy(e) for e in self._events if e.session_id == session_id]
+        return sorted(events, key=lambda e: e.at or datetime.min.replace(tzinfo=UTC))
 
     def create_scorecard(self, scorecard: Scorecard) -> Scorecard:
         if scorecard.session_id not in self._sessions:
@@ -341,8 +376,53 @@ def _row_to_session(row: dict[str, Any]) -> MockSession:
         rubric_id=row.get("rubric_id"),
         guideline_id=row.get("guideline_id"),
         transcript=row.get("transcript") or "",
+        kind=MockSessionKind(row.get("kind") or MockSessionKind.TRANSCRIPT),
+        status=MockSessionStatus(row.get("status") or MockSessionStatus.ENDED),
+        template_id=row.get("template_id"),
+        pack=row.get("pack"),
+        started_at=_parse_dt(row.get("started_at")),
+        ended_at=_parse_dt(row.get("ended_at")),
+        final_files=dict(row.get("final_files") or {}),
+        final_diff=row.get("final_diff") or "",
+        test_report=row.get("test_report"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
+    )
+
+
+def _session_to_row(session: MockSession) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": session.id,
+        "title": session.title,
+        "question_id": session.question_id,
+        "rubric_id": session.rubric_id,
+        "guideline_id": session.guideline_id,
+        "transcript": session.transcript,
+    }
+    # Only live sessions write the migration-012 columns, so pasted
+    # transcripts keep working on a database that has only run 011.
+    if session.kind is MockSessionKind.LIVE:
+        row |= {
+            "kind": session.kind.value,
+            "status": session.status.value,
+            "template_id": session.template_id,
+            "pack": session.pack,
+            "started_at": session.started_at.isoformat() if session.started_at else None,
+            "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+            "final_files": session.final_files,
+            "final_diff": session.final_diff,
+            "test_report": session.test_report,
+        }
+    return row
+
+
+def _row_to_event(row: dict[str, Any]) -> MockEvent:
+    return MockEvent(
+        id=row["id"],
+        session_id=row["session_id"],
+        kind=MockEventKind(row["kind"]),
+        data=dict(row.get("data") or {}),
+        at=_parse_dt(row.get("at")),
     )
 
 
@@ -504,20 +584,36 @@ class SupabaseMockSource:
         return _row_to_session(self._get_one("mock_sessions", session_id))
 
     def create_session(self, session: MockSession) -> MockSession:
-        row = {
-            "id": session.id,
-            "title": session.title,
-            "question_id": session.question_id,
-            "rubric_id": session.rubric_id,
-            "guideline_id": session.guideline_id,
-            "transcript": session.transcript,
-        }
-        resp = self._client.table("mock_sessions").insert(row).execute()
+        resp = self._client.table("mock_sessions").insert(_session_to_row(session)).execute()
         return _row_to_session(resp.data[0])
 
+    def update_session(self, session: MockSession) -> MockSession:
+        return _row_to_session(self._update("mock_sessions", _session_to_row(session)))
+
     def delete_session(self, session_id: str) -> None:
-        # Scorecards cascade (see migration 011).
+        # Scorecards and events cascade (migrations 011 and 012).
         self._client.table("mock_sessions").delete().eq("id", session_id).execute()
+
+    def add_event(self, event: MockEvent) -> MockEvent:
+        row: dict[str, Any] = {
+            "session_id": event.session_id,
+            "kind": event.kind.value,
+            "data": event.data,
+        }
+        if event.at is not None:  # Events recorded after the fact keep their own time.
+            row["at"] = event.at.isoformat()
+        resp = self._client.table("mock_session_events").insert(row).execute()
+        return _row_to_event(resp.data[0])
+
+    def list_events(self, session_id: str) -> list[MockEvent]:
+        resp = (
+            self._client.table("mock_session_events")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("at")
+            .execute()
+        )
+        return [_row_to_event(row) for row in resp.data]
 
     def create_scorecard(self, scorecard: Scorecard) -> Scorecard:
         resp = self._client.table("mock_scorecards").insert(_scorecard_to_row(scorecard)).execute()

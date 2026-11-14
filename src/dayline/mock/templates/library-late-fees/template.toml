@@ -1,0 +1,7 @@
+title = "Library checkout: fix a bug, then add late fees"
+pack = "python"
+round_type = "AI-assisted project"
+duration_min = 45
+# The file the editor opens first.
+open = "library/service.py"
+summary = "A small library service lets two members borrow the same copy. Fix that, then add late fees."

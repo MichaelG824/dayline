@@ -1,0 +1,7 @@
+title = "Rate limiter: fix the refill, then add retryAfter"
+pack = "typescript"
+round_type = "AI-assisted project"
+duration_min = 45
+# The file the editor opens first.
+open = "src/limiter.ts"
+summary = "A token-bucket rate limiter refills far too fast. Fix it, then tell callers when to retry."

@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { MockQuestion } from '../../lib/api';
+import { MockQuestion, MockSessionSummary } from '../../lib/api';
 import { ImportPost } from './ImportPost';
+import { LiveStart } from './LiveStart';
 import { NewGrading } from './NewGrading';
 import { QuestionBank } from './QuestionBank';
 import { QuestionDetail } from './QuestionDetail';
@@ -10,8 +11,9 @@ import { QuestionForm } from './QuestionForm';
 import { RubricsView } from './RubricsView';
 import { SessionList } from './SessionList';
 import { SessionView } from './SessionView';
+import { Workspace } from './Workspace';
 
-type Section = 'questions' | 'grading' | 'rubrics';
+type Section = 'questions' | 'practice' | 'rubrics';
 
 // Which screen of the tab is showing. Kept here (not in each section) so a
 // question can jump straight to "grade a transcript for this question" and a
@@ -23,19 +25,21 @@ type View =
   | { kind: 'import' }
   | { kind: 'sessions' }
   | { kind: 'new-grading'; questionId?: string }
+  | { kind: 'new-live' }
+  | { kind: 'workspace'; id: string }
   | { kind: 'session'; id: string }
   | { kind: 'rubrics' };
 
 const SECTIONS: { id: Section; label: string; home: View }[] = [
   { id: 'questions', label: 'Question bank', home: { kind: 'questions' } },
-  { id: 'grading', label: 'Grading', home: { kind: 'sessions' } },
+  { id: 'practice', label: 'Practice', home: { kind: 'sessions' } },
   { id: 'rubrics', label: 'Rubrics & standards', home: { kind: 'rubrics' } },
 ];
 
 function sectionOf(view: View): Section {
   if (view.kind === 'rubrics') return 'rubrics';
-  if (view.kind === 'sessions' || view.kind === 'new-grading' || view.kind === 'session') {
-    return 'grading';
+  if (['sessions', 'new-grading', 'new-live', 'workspace', 'session'].includes(view.kind)) {
+    return 'practice';
   }
   return 'questions';
 }
@@ -48,6 +52,14 @@ interface Props {
 export function MockTab({ day, onTasksChanged }: Props) {
   const [view, setView] = useState<View>({ kind: 'questions' });
   const section = sectionOf(view);
+
+  // A live session still in progress opens its workspace; anything else its record.
+  const openSession = (s: Pick<MockSessionSummary, 'id' | 'kind' | 'status'>) =>
+    setView(
+      s.kind === 'live' && s.status === 'live'
+        ? { kind: 'workspace', id: s.id }
+        : { kind: 'session', id: s.id },
+    );
 
   return (
     <div className="flex flex-col gap-6">
@@ -102,8 +114,9 @@ export function MockTab({ day, onTasksChanged }: Props) {
       )}
       {view.kind === 'sessions' && (
         <SessionList
-          onOpen={(id) => setView({ kind: 'session', id })}
-          onNew={() => setView({ kind: 'new-grading' })}
+          onOpen={openSession}
+          onNewLive={() => setView({ kind: 'new-live' })}
+          onNewGrading={() => setView({ kind: 'new-grading' })}
         />
       )}
       {view.kind === 'new-grading' && (
@@ -113,12 +126,27 @@ export function MockTab({ day, onTasksChanged }: Props) {
           onCreated={(id) => setView({ kind: 'session', id })}
         />
       )}
+      {view.kind === 'new-live' && (
+        <LiveStart
+          onCancel={() => setView({ kind: 'sessions' })}
+          onStarted={(id) => setView({ kind: 'workspace', id })}
+        />
+      )}
+      {view.kind === 'workspace' && (
+        <Workspace
+          key={view.id}
+          sessionId={view.id}
+          onExit={() => setView({ kind: 'sessions' })}
+          onEnded={(id) => setView({ kind: 'session', id })}
+        />
+      )}
       {view.kind === 'session' && (
         <SessionView
           key={view.id}
           sessionId={view.id}
           day={day}
           onBack={() => setView({ kind: 'sessions' })}
+          onOpenWorkspace={() => setView({ kind: 'workspace', id: view.id })}
           onOpenQuestion={(id) => setView({ kind: 'question', id })}
           onDeleted={() => setView({ kind: 'sessions' })}
           onTasksChanged={onTasksChanged}

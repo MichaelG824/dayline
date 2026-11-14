@@ -4,14 +4,15 @@ import { useEffect, useState } from 'react';
 import { MockSessionSummary, getMockSessions } from '../../lib/api';
 import { MAX_SCORE, scoreText } from '../../lib/mock';
 import { formatShortDate } from '../../lib/problems';
-import { CARD, ErrorText, PRIMARY_BUTTON } from './ui';
+import { CARD, ErrorText, Pill, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 interface Props {
-  onOpen: (sessionId: string) => void;
-  onNew: () => void;
+  onOpen: (session: MockSessionSummary) => void;
+  onNewLive: () => void;
+  onNewGrading: () => void;
 }
 
-export function SessionList({ onOpen, onNew }: Props) {
+export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
   const [sessions, setSessions] = useState<MockSessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,14 +33,20 @@ export function SessionList({ onOpen, onNew }: Props) {
     <div className="flex flex-col gap-5 max-w-3xl">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div>
-          <h2 className="text-lg font-semibold">Grading</h2>
+          <h2 className="text-lg font-semibold">Practice</h2>
           <p className="text-sm text-zinc-500">
-            Paste a mock transcript and get scored against your rubric, with quotes as evidence.
+            Code a practice repo in a sandbox, or paste a past mock's transcript. Either way you get scored
+            against your rubric, with evidence.
           </p>
         </div>
-        <button onClick={onNew} className={PRIMARY_BUTTON}>
-          Grade a transcript
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={onNewGrading} className={SECONDARY_BUTTON}>
+            Grade a transcript
+          </button>
+          <button onClick={onNewLive} className={PRIMARY_BUTTON}>
+            Start a live session
+          </button>
+        </div>
       </div>
 
       {average != null && (
@@ -60,17 +67,26 @@ export function SessionList({ onOpen, onNew }: Props) {
 
       {sessions.length === 0 ? (
         <div className={`${CARD} px-4 py-10 text-center text-sm text-zinc-500`}>
-          No sessions yet. Grade the transcript of a past mock to see where you stand.
+          No sessions yet. Start a live session, or grade the transcript of a past mock to see where you
+          stand.
         </div>
       ) : (
         <div className="flex flex-col gap-2">
           {sessions.map((s) => (
             <button
               key={s.id}
-              onClick={() => onOpen(s.id)}
+              onClick={() => onOpen(s)}
               className={`${CARD} flex items-center gap-3 px-4 py-3 text-left hover:border-zinc-300 dark:hover:border-zinc-700`}
             >
               <span className="flex-1 min-w-0 truncate text-sm font-medium">{s.title}</span>
+              {s.kind === 'live' &&
+                (s.status === 'live' ? (
+                  <Pill className="!bg-emerald-100 dark:!bg-emerald-500/15 !text-emerald-700 dark:!text-emerald-300">
+                    In progress
+                  </Pill>
+                ) : (
+                  <Pill>Live</Pill>
+                ))}
               <span className="font-mono text-xs text-zinc-500">{formatShortDate(s.createdAt)}</span>
               <span
                 className={`w-20 text-right font-mono text-sm tabular-nums ${

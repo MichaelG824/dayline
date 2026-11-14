@@ -43,6 +43,7 @@ def ctx() -> SimpleNamespace:
             guidelines=[MockGuideline(id="g1", name="Strict", body_md="Be strict.")],
         ),
         anthropic_client=FakeAnthropic(FakeMessages([])),
+        sandbox=None,
         client=None,
     )
 

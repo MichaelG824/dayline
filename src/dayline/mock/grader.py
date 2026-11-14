@@ -1,13 +1,17 @@
-"""Grade a mock-interview transcript against a rubric.
+"""Grade a mock-interview session against a rubric.
+
+A session has a transcript (pasted, or recorded live), a work record (what
+the candidate did in the sandbox: timeline, tests, diff - see
+``mock/worklog.py``), or both.
 
 The model fills in one tool call (``submit_scorecard``, see ``mock/llm.py``). Code - not the
 model - then decides what to trust:
 
 - Every rubric criterion must be scored exactly once, 1-4. A malformed card is
   sent back to the model with the problems listed, up to ``MAX_ATTEMPTS``.
-- Every evidence quote is checked against the transcript. A quote that does
-  not appear there is kept but marked ``verified=False`` so the UI can flag it;
-  the grader cannot invent evidence silently.
+- Every evidence quote is checked against the transcript and the work record.
+  A quote that appears in neither is kept but marked ``verified=False`` so the
+  UI can flag it; the grader cannot invent evidence silently.
 - The overall score is the weighted mean of criterion scores, computed here.
 
 Weak areas become ``propose_new_task`` proposals (see :func:`weak_area_proposals`)
@@ -52,15 +56,20 @@ SCORE_SCALE = """Score scale (integers only):
 4 = strong; clearly above the bar, with specific evidence"""
 
 SYSTEM_PROMPT = f"""You are a strict, fair interview grader. You grade one \
-mock-interview transcript against a rubric and the candidate's own standards.
+mock-interview session against a rubric and the candidate's own standards. \
+The session has a transcript, a work record of what the candidate did in the \
+code sandbox (timeline, test results, final diff), or both.
 
 {SCORE_SCALE}
 
 Rules:
 - Score every rubric criterion exactly once, using its key.
-- Evidence must be short verbatim quotes copied from the transcript (a phrase \
-or sentence, not a paraphrase). Prefer 1-3 quotes per criterion. If the \
-transcript shows nothing for a criterion, give no quotes and score it low.
+- Evidence must be short verbatim quotes copied from the transcript or the \
+work record (a phrase, sentence, timeline line, or diff line - not a \
+paraphrase). Prefer 1-3 quotes per criterion. If the session shows nothing \
+for a criterion, give no quotes and score it low.
+- With no transcript, criteria about explaining or communicating have no \
+evidence: score them 1 and say the session had no conversation.
 - improvement: one specific, actionable change for next time.
 - weak_areas: at most {MAX_WEAK_AREAS} things to practise next, each phrased \
 as a concrete prep task (task_name) with a realistic duration in minutes.
@@ -110,7 +119,7 @@ SUBMIT_TOOL: dict[str, Any] = {
 
 
 class GradingError(ValueError):
-    """The transcript could not be graded (bad input, or the model never
+    """The session could not be graded (bad input, or the model never
     produced a valid scorecard)."""
 
 
@@ -120,6 +129,8 @@ class GradeInput:
     rubric: MockRubric
     guideline: MockGuideline | None = None
     question: MockQuestion | None = None
+    # What the candidate did in a live session (``worklog.work_record``).
+    work: str = ""
 
 
 _QUOTE_CHARS = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
@@ -167,7 +178,12 @@ def _user_message(data: GradeInput) -> str:
         if q.follow_ups:
             detail.append("Expected follow-ups:\n" + "\n".join(f"- {f}" for f in q.follow_ups))
         parts.append("\n".join(detail))
-    parts.append(f"## Transcript\n<transcript>\n{data.transcript.strip()}\n</transcript>")
+    if data.transcript.strip():
+        parts.append(f"## Transcript\n<transcript>\n{data.transcript.strip()}\n</transcript>")
+    else:
+        parts.append("## Transcript\n(none - this session had no conversation)")
+    if data.work.strip():
+        parts.append(f"## Work record\n<work>\n{data.work.strip()}\n</work>")
     return "\n\n".join(parts)
 
 
@@ -222,7 +238,11 @@ def _build_scorecard(
             title=titles[key],
             score=by_key[key]["score"],
             evidence=[
-                Evidence(quote=q.strip(), verified=quote_in_transcript(q, data.transcript))
+                Evidence(
+                    quote=q.strip(),
+                    verified=quote_in_transcript(q, data.transcript)
+                    or quote_in_transcript(q, data.work),
+                )
                 for q in by_key[key].get("evidence") or []
                 if isinstance(q, str) and q.strip()
             ],
@@ -246,15 +266,16 @@ def _build_scorecard(
     )
 
 
-def grade_transcript(
+def grade(
     client: anthropic.Anthropic, model: str, data: GradeInput, session_id: str
 ) -> Scorecard:
-    """Grade ``data.transcript``. Raises :class:`GradingError` on bad input or
-    when no valid scorecard comes back within ``MAX_ATTEMPTS``."""
-    if not data.transcript.strip():
-        raise GradingError("The transcript is empty")
-    if len(data.transcript) > MAX_TRANSCRIPT_CHARS:
-        raise GradingError(f"Transcript is over {MAX_TRANSCRIPT_CHARS:,} characters")
+    """Grade a session's transcript and work record. Raises
+    :class:`GradingError` on bad input or when no valid scorecard comes back
+    within ``MAX_ATTEMPTS``."""
+    if not data.transcript.strip() and not data.work.strip():
+        raise GradingError("There is nothing to grade: no transcript and no work")
+    if len(data.transcript) + len(data.work) > MAX_TRANSCRIPT_CHARS:
+        raise GradingError(f"The session is over {MAX_TRANSCRIPT_CHARS:,} characters")
     if not data.rubric.criteria:
         raise GradingError(f"Rubric {data.rubric.name!r} has no criteria")
 

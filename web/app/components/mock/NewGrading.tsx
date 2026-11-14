@@ -94,7 +94,7 @@ export function NewGrading({ initialQuestionId, onCancel, onCreated }: Props) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5 max-w-3xl">
       <div className="flex items-center gap-3">
-        <BackButton onClick={onCancel}>Grading</BackButton>
+        <BackButton onClick={onCancel}>Practice</BackButton>
         <h2 className="text-lg font-semibold">Grade a transcript</h2>
       </div>
 

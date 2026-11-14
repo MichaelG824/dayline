@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse, Response
 
 SESSION_COOKIE = "dayline_session"
@@ -134,7 +134,8 @@ def identity_from_token(token: str) -> Identity | None:
     return Identity(email=email.strip(), sub=sub)
 
 
-def identity_from_request(request: Request) -> Identity | None:
+def identity_from_request(request: HTTPConnection) -> Identity | None:
+    """The signed-in identity of an HTTP request or a WebSocket connection."""
     header = request.headers.get("authorization") or request.headers.get("Authorization")
     token: str | None = None
     if header and header.lower().startswith("bearer "):
@@ -216,6 +217,28 @@ def google_authorize_url(state: str) -> str:
         }
     )
     return f"{_GOOGLE_AUTH_URL}?{query}"
+
+
+def websocket_auth_problem(connection: HTTPConnection) -> str | None:
+    """Why a WebSocket must be refused, or ``None`` if it may connect.
+
+    ``AuthGateMiddleware`` only sees HTTP requests, so WebSocket routes call
+    this themselves. Browsers send cookies with cross-site WebSocket
+    handshakes and CORS does not apply, so the ``Origin`` must also be one of
+    ours (cross-site WebSocket hijacking).
+    """
+    origin = connection.headers.get("origin")
+    if origin and origin.rstrip("/") not in cors_origins():
+        return "Origin not allowed"
+    try:
+        identity = identity_from_request(connection)
+    except RuntimeError as exc:
+        return str(exc)
+    if identity is None:
+        return "Sign in required"
+    if not email_allowed(identity.email):
+        return "This account is not allowed to use Dayline"
+    return None
 
 
 class AuthGateMiddleware(BaseHTTPMiddleware):

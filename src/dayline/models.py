@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum, StrEnum
+from typing import Any
 
 
 class Category(StrEnum):
@@ -386,9 +387,21 @@ class MockGuideline:
     updated_at: datetime | None = None
 
 
+class MockSessionKind(StrEnum):
+    TRANSCRIPT = "transcript"  # A pasted transcript, graded after the fact.
+    LIVE = "live"  # Coded in a sandbox inside Dayline.
+
+
+class MockSessionStatus(StrEnum):
+    LIVE = "live"
+    ENDED = "ended"
+
+
 @dataclass(slots=True)
 class MockSession:
-    """One practice attempt. Phase 1 sessions are pasted transcripts."""
+    """One practice attempt: a pasted transcript, or a live session in a
+    sandbox. A live session's ``final_*`` fields and ``test_report`` are
+    filled in when it ends."""
 
     title: str
     id: str
@@ -396,8 +409,39 @@ class MockSession:
     rubric_id: str | None = None
     guideline_id: str | None = None
     transcript: str = ""
+    kind: MockSessionKind = MockSessionKind.TRANSCRIPT
+    status: MockSessionStatus = MockSessionStatus.ENDED
+    template_id: str | None = None
+    pack: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    final_files: dict[str, str] = field(default_factory=dict)
+    final_diff: str = ""
+    # The last test run as the sandbox runner reported it (camelCase JSON).
+    test_report: dict[str, Any] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class MockEventKind(StrEnum):
+    SESSION_STARTED = "session_started"
+    FILE_SAVED = "file_saved"
+    TESTS_RUN = "tests_run"
+    COMMAND_RUN = "command_run"  # Typed in the terminal: {"command", "exitCode"}.
+    SESSION_ENDED = "session_ended"
+
+
+@dataclass(slots=True)
+class MockEvent:
+    """Something that happened during a live session, e.g. a save
+    (``{"path", "added", "removed"}``) or a test run (``{"status", "passed",
+    "failed", "errors"}``)."""
+
+    session_id: str
+    kind: MockEventKind
+    data: dict[str, Any] = field(default_factory=dict)
+    id: str = ""
+    at: datetime | None = None
 
 
 @dataclass(slots=True)
