@@ -24,6 +24,7 @@ export interface TaskRow {
   applicationId: string | null;
   interviewId: string | null;
   problemId: string | null;
+  mockSessionId: string | null;
 }
 
 export interface PlanResponse {
@@ -616,4 +617,258 @@ export async function updateProblemTag(tagId: string, input: ProblemTagInput): P
 export async function deleteProblemTag(tagId: string): Promise<void> {
   const res = await apiFetch(`/api/problem-tags/${tagId}`, { method: 'DELETE' });
   await checkOk(res, 'Failed to delete tag');
+}
+
+// ---------------------------------------------------------------------------
+// Mock interviews (the Mock tab). Mirrors dayline.api.serializers mock_*_json.
+// ---------------------------------------------------------------------------
+
+export interface MockQuestion {
+  id: string;
+  source: string;
+  sourceUrl: string | null;
+  company: string | null;
+  role: string | null;
+  roundType: string;
+  title: string;
+  promptMd: string;
+  constraints: string[];
+  followUps: string[];
+  languageHint: string | null;
+  originalText: string;
+  originalLanguage: string | null;
+  reportedOn: string | null;
+  canonicalId: string | null;
+  notes: string;
+  timesSeen: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface MockSessionSummary {
+  id: string;
+  title: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+  overallScore: number | null;
+  createdAt: string | null;
+}
+
+export interface MockQuestionDetail extends MockQuestion {
+  copies: MockQuestion[];
+  sessions: MockSessionSummary[];
+}
+
+// Every field optional so PATCH can send just what changed.
+export type MockQuestionInput = Partial<
+  Omit<MockQuestion, 'id' | 'timesSeen' | 'createdAt' | 'updatedAt'>
+>;
+
+export interface SimilarQuestion {
+  id: string;
+  title: string;
+  company: string | null;
+  score: number;
+}
+
+export interface ExtractedQuestion {
+  title: string;
+  roundType: string;
+  promptMd: string;
+  company: string | null;
+  role: string | null;
+  constraints: string[];
+  followUps: string[];
+  languageHint: string | null;
+  reportedOn: string | null;
+  similar: SimilarQuestion[];
+}
+
+export interface Extraction {
+  originalLanguage: string | null;
+  questions: ExtractedQuestion[];
+}
+
+export interface RubricCriterion {
+  key: string;
+  title: string;
+  description: string;
+  weight: number;
+}
+
+export interface MockRubric {
+  id: string;
+  name: string;
+  roundType: string | null;
+  criteria: RubricCriterion[];
+  updatedAt: string | null;
+}
+
+export interface MockRubricInput {
+  name: string;
+  roundType: string | null;
+  // key is optional on new criteria: the server derives it from the title.
+  criteria: (Omit<RubricCriterion, 'key'> & { key?: string })[];
+}
+
+export interface MockGuideline {
+  id: string;
+  name: string;
+  bodyMd: string;
+  updatedAt: string | null;
+}
+
+export interface Evidence {
+  quote: string;
+  // True only when the quote really appears in the transcript (checked in code).
+  verified: boolean;
+}
+
+export interface CriterionScore {
+  key: string;
+  title: string;
+  score: number;
+  evidence: Evidence[];
+  improvement: string;
+}
+
+export interface WeakArea {
+  title: string;
+  why: string;
+  taskName: string;
+  category: string;
+  estDurationMin: number;
+}
+
+export interface Scorecard {
+  id: string;
+  sessionId: string;
+  overallScore: number;
+  summary: string;
+  criteria: CriterionScore[];
+  strengths: string[];
+  weakAreas: WeakArea[];
+  graderModel: string;
+  createdAt: string | null;
+}
+
+export interface MockSessionDetail extends MockSessionSummary {
+  transcript: string;
+  scorecard: Scorecard | null;
+  // The scorecard's weak areas as propose_new_task proposals for confirmProposals.
+  proposals: Proposal[];
+  tasks: TaskRow[];
+}
+
+export interface MockSessionInput {
+  title: string;
+  transcript: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+}
+
+export async function getMockQuestions(): Promise<MockQuestion[]> {
+  const res = await apiFetch('/api/mock/questions');
+  return (await checkOk(res, 'Failed to load questions')).json();
+}
+
+export async function getMockQuestion(questionId: string): Promise<MockQuestionDetail> {
+  const res = await apiFetch(`/api/mock/questions/${questionId}`);
+  return (await checkOk(res, 'Failed to load question')).json();
+}
+
+export async function createMockQuestion(input: MockQuestionInput): Promise<MockQuestion> {
+  const res = await apiFetch('/api/mock/questions', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save question')).json();
+}
+
+export async function updateMockQuestion(
+  questionId: string,
+  input: MockQuestionInput
+): Promise<MockQuestion> {
+  const res = await apiFetch(`/api/mock/questions/${questionId}`, jsonInit('PATCH', input));
+  return (await checkOk(res, 'Failed to save question')).json();
+}
+
+export async function deleteMockQuestion(questionId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/questions/${questionId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete question');
+}
+
+export async function extractMockQuestions(text: string): Promise<Extraction> {
+  const res = await apiFetch('/api/mock/extract', jsonInit('POST', { text }));
+  return (await checkOk(res, 'Failed to extract questions')).json();
+}
+
+export async function getMockRubrics(): Promise<MockRubric[]> {
+  const res = await apiFetch('/api/mock/rubrics');
+  return (await checkOk(res, 'Failed to load rubrics')).json();
+}
+
+export async function createMockRubric(input: MockRubricInput): Promise<MockRubric> {
+  const res = await apiFetch('/api/mock/rubrics', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save rubric')).json();
+}
+
+export async function updateMockRubric(rubricId: string, input: MockRubricInput): Promise<MockRubric> {
+  const res = await apiFetch(`/api/mock/rubrics/${rubricId}`, jsonInit('PUT', input));
+  return (await checkOk(res, 'Failed to save rubric')).json();
+}
+
+export async function deleteMockRubric(rubricId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/rubrics/${rubricId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete rubric');
+}
+
+export async function getMockGuidelines(): Promise<MockGuideline[]> {
+  const res = await apiFetch('/api/mock/guidelines');
+  return (await checkOk(res, 'Failed to load guidelines')).json();
+}
+
+export async function createMockGuideline(input: {
+  name: string;
+  bodyMd: string;
+}): Promise<MockGuideline> {
+  const res = await apiFetch('/api/mock/guidelines', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save guideline')).json();
+}
+
+export async function updateMockGuideline(
+  guidelineId: string,
+  input: { name: string; bodyMd: string }
+): Promise<MockGuideline> {
+  const res = await apiFetch(`/api/mock/guidelines/${guidelineId}`, jsonInit('PUT', input));
+  return (await checkOk(res, 'Failed to save guideline')).json();
+}
+
+export async function deleteMockGuideline(guidelineId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/guidelines/${guidelineId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete guideline');
+}
+
+export async function getMockSessions(): Promise<MockSessionSummary[]> {
+  const res = await apiFetch('/api/mock/sessions');
+  return (await checkOk(res, 'Failed to load sessions')).json();
+}
+
+export async function getMockSession(sessionId: string): Promise<MockSessionDetail> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}`);
+  return (await checkOk(res, 'Failed to load session')).json();
+}
+
+export async function createMockSession(input: MockSessionInput): Promise<MockSessionDetail> {
+  const res = await apiFetch('/api/mock/sessions', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save session')).json();
+}
+
+export async function gradeMockSession(sessionId: string): Promise<MockSessionDetail> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/grade`, { method: 'POST' });
+  return (await checkOk(res, 'Grading failed')).json();
+}
+
+export async function deleteMockSession(sessionId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete session');
 }

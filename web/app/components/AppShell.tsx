@@ -26,7 +26,11 @@ const ProblemsTab = dynamic(() => import('./problems/ProblemsTab').then((m) => m
   loading: () => <p className="font-mono text-sm text-zinc-500">Loading…</p>,
 });
 
-export type Tab = 'tasks' | 'problems' | 'interviews' | 'chat' | 'pomodoro';
+const MockTab = dynamic(() => import('./mock/MockTab').then((m) => m.MockTab), {
+  loading: () => <p className="font-mono text-sm text-zinc-500">Loading…</p>,
+});
+
+export type Tab = 'tasks' | 'problems' | 'mock' | 'interviews' | 'chat' | 'pomodoro';
 
 interface Props {
   initialDay: string;
@@ -109,7 +113,7 @@ export function AppShell({
       <main className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 px-6 py-3">
           <nav className="flex gap-1">
-            {(['tasks', 'problems', 'interviews', 'chat', 'pomodoro'] as Tab[]).map((t) => (
+            {(['tasks', 'problems', 'mock', 'interviews', 'chat', 'pomodoro'] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -155,6 +159,7 @@ export function AppShell({
               onTasksChanged={() => refreshDay(day)}
             />
           )}
+          {tab === 'mock' && <MockTab day={day} onTasksChanged={() => refreshDay(day)} />}
           {tab === 'interviews' && (
             <InterviewsTab
               interviews={interviews}

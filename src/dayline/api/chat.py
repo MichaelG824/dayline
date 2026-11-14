@@ -547,6 +547,9 @@ def apply_proposal(deps: ChatDeps, proposal: dict[str, Any]) -> dict[str, Any]:
             planned_date=date.fromisoformat(proposal["planned_date"])
             if proposal.get("planned_date")
             else None,
+            # Set only by mock-interview scorecard proposals (mock/grader.py),
+            # never by the chat model's propose_new_task schema.
+            mock_session_id=proposal.get("mock_session_id"),
         )
         created = task_source.create_task(task)
         return {"type": kind, "task_id": created.id, "result": "ok"}

@@ -12,6 +12,8 @@ from dayline.models import (
     Category,
     Difficulty,
     InterviewCategory,
+    MockQuestionSource,
+    MockRoundType,
     Priority,
     ProblemStatus,
     Recurrence,
@@ -85,4 +87,20 @@ def parse_problem_status(value: str) -> ProblemStatus:
     except ValueError as exc:
         raise HTTPException(
             status_code=400, detail=f"Unknown problem status {value!r}"
+        ) from exc
+
+
+def parse_mock_round_type(value: str) -> MockRoundType:
+    try:
+        return MockRoundType(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown round type {value!r}") from exc
+
+
+def parse_mock_question_source(value: str) -> MockQuestionSource:
+    try:
+        return MockQuestionSource(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown question source {value!r}"
         ) from exc

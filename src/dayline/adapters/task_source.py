@@ -180,6 +180,7 @@ def _dict_to_task(d: dict[str, Any]) -> Task:
         application_id=d.get("application_id"),
         interview_id=d.get("interview_id"),
         problem_id=d.get("problem_id"),
+        mock_session_id=d.get("mock_session_id"),
     )
 
 
@@ -257,6 +258,7 @@ def _task_to_row(task: Task) -> dict[str, Any]:
         "application_id": task.application_id,
         "interview_id": task.interview_id,
         "problem_id": task.problem_id,
+        "mock_session_id": task.mock_session_id,
     }
 
 

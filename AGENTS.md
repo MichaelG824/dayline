@@ -38,6 +38,16 @@ The 5 prep categories (`AI_CODING_REACT_PYTHON`, `AI_CODING_DSA`, `BEHAVIORAL`, 
 
 **Outcomes** (`adapters/outcomes.py`, table `planner_outcomes`): lightweight accept/reject/completion/duration-override events for retros via `get_recent_outcomes`. Confirm logs accepts + rejects (`offered` minus applied); task PATCH logs completion/duration overrides best-effort. Nudges still require propose → confirm.
 
+## Mock interviews (the Mock tab)
+
+`adapters/mock_source.py` (`MockSource`, migration `011_mock_interviews.sql`) stores the private question bank, rubrics, grading standards (`mock_guidelines`), sessions, and scorecards. The LLM work lives in `src/dayline/mock/` (no FastAPI/Supabase imports); `api/services/mock.py` wires it.
+
+- **Tool calls are not forced.** The current models reject `tool_choice` of type `tool`/`any`, so `mock/llm.py` offers the tool with `auto`, says "call it" in the system prompt, and nudges once if the reply is prose. Never reintroduce a forced `tool_choice`.
+- **Code decides what to trust in a scorecard** (`mock/grader.py`): every rubric key exactly once with an integer 1-4 (invalid cards go back to the model, up to `MAX_ATTEMPTS`), the overall score is a weighted mean computed in code, and each evidence quote is matched against the transcript (`verified`) so invented quotes are flagged, not trusted.
+- **Duplicates are suggestions, never merges.** `mock/ingest.py` shortlists similar canonical questions (rapidfuzz on title + prompt); the user picks "same as" on save. Copies point at a root via `canonical_id`, one level deep (`services/mock.py` `_canonical_target`).
+- **Weak areas become tasks only via `POST /api/chat/confirm`.** `weak_area_proposals` emits `propose_new_task` proposals carrying `mock_session_id`; `apply_proposal` copies it onto the task. The client offers only proposals not yet added, so already-added ones are never logged as rejected.
+- Models: `MOCK_MODEL` (extraction; default `claude-sonnet-5-5`) and `MOCK_GRADER_MODEL` (default `claude-opus-5-5`), see `mock/__init__.py`.
+
 ## Auth and production host
 
 Google sign-in is the ownership proof; `ALLOWED_EMAIL` is the only account that may use the app (`api/auth.py`). If it is unset, nobody is allowlisted.
