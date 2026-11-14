@@ -180,6 +180,15 @@ Captain steps after this repo is on GitHub:
 3. Add `{PUBLIC_URL}/api/auth/callback` to the OAuth client's redirect URIs (and `{PUBLIC_URL}` as an authorized JavaScript origin).
 4. Optional interviews-on-calendar: set `GOOGLE_CALENDAR_REFRESH_TOKEN` (see `GOOGLE_SETUP.md`).
    The desktop `credentials.json` flow does not survive scale-to-zero.
+5. Optional live mock sessions: run `deploy/sandbox-vm/setup.sh`, then `deploy/sandbox-vm/connect-cloud-run.sh` (see `deploy/sandbox-vm/README.md`).
+
+### Sandbox runner host
+
+Live mock sessions execute untrusted code, so the sandbox runner (`sandbox/runner`) does not run in the Cloud Run container.
+It runs alone on one e2-small Compute Engine VM (about $14/month) in a dedicated VPC with no public address and no service account, and every session container runs under gVisor.
+Cloud Run reaches it over Direct VPC egress at a private IP (`SANDBOX_RUNNER_URL`), authenticated with `SANDBOX_RUNNER_SECRET` from Secret Manager; the runner port accepts connections only from Cloud Run's egress subnet.
+Without these two env vars, live sessions show "sandbox unavailable" and everything else works.
+`deploy/sandbox-vm/README.md` has the resources, security posture, and the idempotent setup and teardown scripts.
 
 Do not put a public URL in front of the API until sign-in is configured.
 A local production-shaped run is `docker compose up --build` on http://localhost:8080.
