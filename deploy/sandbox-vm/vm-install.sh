@@ -26,7 +26,7 @@ fi
 apt-get install -y -q runsc
 
 echo "==> Docker daemon"
-python3 - <<'EOF'
+changed="$(python3 - <<'EOF'
 import json
 from pathlib import Path
 
@@ -38,10 +38,15 @@ cfg["log-driver"] = "local"
 new = json.dumps(cfg, indent=2) + "\n"
 if not path.exists() or path.read_text() != new:
     path.write_text(new)
-    print("daemon.json changed")
+    print("changed")
 EOF
-systemctl enable docker
-systemctl restart docker
+)"
+systemctl enable --now docker
+# Restarting Docker stops every running sandbox, so only do it when needed.
+if [[ "$changed" == changed ]]; then
+  echo "daemon.json changed; restarting Docker"
+  systemctl restart docker
+fi
 
 echo "==> Runner"
 id dayline-runner >/dev/null 2>&1 ||
