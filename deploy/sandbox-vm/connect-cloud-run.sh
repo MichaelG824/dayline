@@ -36,8 +36,10 @@ gc run services update "$SERVICE" --region "$REGION" \
   --update-env-vars "SANDBOX_RUNNER_URL=$RUNNER_URL" \
   --update-secrets "SANDBOX_RUNNER_SECRET=$SECRET:latest" \
   --no-traffic
+# Not latestReadyRevisionName: it can lag behind, and revision numbers are
+# not ordered. `update` has already waited for this revision to be Ready.
 new="$(gc run services describe "$SERVICE" --region "$REGION" \
-  --format 'value(status.latestReadyRevisionName)')"
+  --format 'value(status.latestCreatedRevisionName)')"
 
 if [[ "$new" == "$previous" ]]; then
   step "Nothing changed; $previous already has this configuration"
