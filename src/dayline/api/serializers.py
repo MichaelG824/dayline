@@ -16,9 +16,15 @@ from dayline.adapters.task_source import SupabaseTaskSource
 from dayline.models import (
     Application,
     Interview,
+    MockEvent,
+    MockGuideline,
+    MockQuestion,
+    MockRubric,
+    MockSession,
     Plan,
     Problem,
     ProblemTag,
+    Scorecard,
     Solution,
     Task,
 )
@@ -43,6 +49,7 @@ def task_json(task: Task, task_source: SupabaseTaskSource) -> dict[str, Any]:
         "applicationId": task.application_id,
         "interviewId": task.interview_id,
         "problemId": task.problem_id,
+        "mockSessionId": task.mock_session_id,
     }
 
 
@@ -147,3 +154,106 @@ def problem_tag_json(tag: ProblemTag, problem_count: int) -> dict[str, Any]:
         "color": tag.color,
         "problemCount": problem_count,
     }
+
+
+def mock_question_json(question: MockQuestion, times_seen: int = 1) -> dict[str, Any]:
+    """``timesSeen`` counts this question plus every copy pointing at it."""
+    return {
+        "id": question.id,
+        "source": question.source.value,
+        "sourceUrl": question.source_url,
+        "company": question.company,
+        "role": question.role,
+        "roundType": question.round_type.value,
+        "title": question.title,
+        "promptMd": question.prompt_md,
+        "constraints": question.constraints,
+        "followUps": question.follow_ups,
+        "languageHint": question.language_hint,
+        "originalText": question.original_text,
+        "originalLanguage": question.original_language,
+        "reportedOn": question.reported_on.isoformat() if question.reported_on else None,
+        "canonicalId": question.canonical_id,
+        "notes": question.notes,
+        "timesSeen": times_seen,
+        "createdAt": _iso(question.created_at),
+        "updatedAt": _iso(question.updated_at),
+    }
+
+
+def mock_rubric_json(rubric: MockRubric) -> dict[str, Any]:
+    return {
+        "id": rubric.id,
+        "name": rubric.name,
+        "roundType": rubric.round_type.value if rubric.round_type else None,
+        "criteria": [
+            {"key": c.key, "title": c.title, "description": c.description, "weight": c.weight}
+            for c in rubric.criteria
+        ],
+        "updatedAt": _iso(rubric.updated_at),
+    }
+
+
+def mock_guideline_json(guideline: MockGuideline) -> dict[str, Any]:
+    return {
+        "id": guideline.id,
+        "name": guideline.name,
+        "bodyMd": guideline.body_md,
+        "updatedAt": _iso(guideline.updated_at),
+    }
+
+
+def scorecard_json(card: Scorecard) -> dict[str, Any]:
+    return {
+        "id": card.id,
+        "sessionId": card.session_id,
+        "overallScore": card.overall_score,
+        "summary": card.summary,
+        "criteria": [
+            {
+                "key": c.key,
+                "title": c.title,
+                "score": c.score,
+                "evidence": [{"quote": e.quote, "verified": e.verified} for e in c.evidence],
+                "improvement": c.improvement,
+            }
+            for c in card.criteria
+        ],
+        "strengths": card.strengths,
+        "weakAreas": [
+            {
+                "title": w.title,
+                "why": w.why,
+                "taskName": w.task_name,
+                "category": w.category.value,
+                "estDurationMin": w.est_duration_min,
+            }
+            for w in card.weak_areas
+        ],
+        "graderModel": card.grader_model,
+        "createdAt": _iso(card.created_at),
+    }
+
+
+def mock_session_json(session: MockSession, scorecard: Scorecard | None) -> dict[str, Any]:
+    """List shape: the transcript is left out (it can be long); fetch one
+    session for the full record."""
+    return {
+        "id": session.id,
+        "title": session.title,
+        "questionId": session.question_id,
+        "rubricId": session.rubric_id,
+        "guidelineId": session.guideline_id,
+        "kind": session.kind.value,
+        "status": session.status.value,
+        "templateId": session.template_id,
+        "pack": session.pack,
+        "startedAt": _iso(session.started_at),
+        "endedAt": _iso(session.ended_at),
+        "overallScore": scorecard.overall_score if scorecard else None,
+        "createdAt": _iso(session.created_at),
+    }
+
+
+def mock_event_json(event: MockEvent) -> dict[str, Any]:
+    return {"kind": event.kind.value, "data": event.data, "at": _iso(event.at)}

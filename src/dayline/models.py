@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum, StrEnum
+from typing import Any
 
 
 class Category(StrEnum):
@@ -192,6 +193,9 @@ class Task:
     # Optional link to the LeetCode Problem this task practices (e.g. a
     # "Solve: Two Sum" block), so the plan can open the problem directly.
     problem_id: str | None = None
+    # Optional link to the MockSession whose scorecard suggested this task
+    # (a weak area turned into prep work), so the session can show its follow-up.
+    mock_session_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.est_duration_min <= 0:
@@ -296,6 +300,194 @@ class Solution:
     space_complexity: str | None = None
     explanation: str = ""
     is_optimal: bool = False
+    created_at: datetime | None = None
+
+
+class MockQuestionSource(StrEnum):
+    """Where a :class:`MockQuestion` came from."""
+
+    OWN = "own"
+    ONE_POINT_THREE_ACRES = "1point3acres"
+    OTHER = "other"
+
+
+class MockRoundType(StrEnum):
+    """The kind of interview round a mock question or rubric is for."""
+
+    AI_ASSISTED_PROJECT = "AI-assisted project"
+    ALGORITHM = "Algorithm"
+    SYSTEM_DESIGN = "System design"
+    DEBUGGING = "Debugging"
+    BEHAVIORAL = "Behavioral"
+
+
+@dataclass(slots=True)
+class MockQuestion:
+    """An interview question in the private mock bank - remembered from a real
+    interview or extracted from a pasted forum post.
+
+    A question reported more than once points at its first copy through
+    ``canonical_id``; the first copy has ``canonical_id`` ``None``.
+    """
+
+    title: str
+    round_type: MockRoundType
+    id: str
+    source: MockQuestionSource = MockQuestionSource.OWN
+    source_url: str | None = None
+    company: str | None = None
+    role: str | None = None
+    prompt_md: str = ""
+    constraints: list[str] = field(default_factory=list)
+    follow_ups: list[str] = field(default_factory=list)
+    language_hint: str | None = None
+    # The pasted post as-is (possibly not English), kept so extraction can be
+    # re-run or checked later.
+    original_text: str = ""
+    original_language: str | None = None
+    reported_on: date | None = None
+    canonical_id: str | None = None
+    notes: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class RubricCriterion:
+    """One graded dimension of a :class:`MockRubric`. ``key`` is the stable id
+    the grader must report back; ``weight`` scales it in the overall score."""
+
+    key: str
+    title: str
+    description: str
+    weight: float = 1.0
+
+
+@dataclass(slots=True)
+class MockRubric:
+    """What a round is graded on."""
+
+    name: str
+    id: str
+    round_type: MockRoundType | None = None
+    criteria: list[RubricCriterion] = field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class MockGuideline:
+    """Free-text grading standards (how strict, what "good" looks like),
+    reusable across rubrics."""
+
+    name: str
+    id: str
+    body_md: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class MockSessionKind(StrEnum):
+    TRANSCRIPT = "transcript"  # A pasted transcript, graded after the fact.
+    LIVE = "live"  # Coded in a sandbox inside Dayline.
+
+
+class MockSessionStatus(StrEnum):
+    LIVE = "live"
+    ENDED = "ended"
+
+
+@dataclass(slots=True)
+class MockSession:
+    """One practice attempt: a pasted transcript, or a live session in a
+    sandbox. A live session's ``final_*`` fields and ``test_report`` are
+    filled in when it ends."""
+
+    title: str
+    id: str
+    question_id: str | None = None
+    rubric_id: str | None = None
+    guideline_id: str | None = None
+    transcript: str = ""
+    kind: MockSessionKind = MockSessionKind.TRANSCRIPT
+    status: MockSessionStatus = MockSessionStatus.ENDED
+    template_id: str | None = None
+    pack: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    final_files: dict[str, str] = field(default_factory=dict)
+    final_diff: str = ""
+    # The last test run as the sandbox runner reported it (camelCase JSON).
+    test_report: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class MockEventKind(StrEnum):
+    SESSION_STARTED = "session_started"
+    FILE_SAVED = "file_saved"
+    TESTS_RUN = "tests_run"
+    COMMAND_RUN = "command_run"  # Typed in the terminal: {"command", "exitCode"}.
+    SESSION_ENDED = "session_ended"
+
+
+@dataclass(slots=True)
+class MockEvent:
+    """Something that happened during a live session, e.g. a save
+    (``{"path", "added", "removed"}``) or a test run (``{"status", "passed",
+    "failed", "errors"}``)."""
+
+    session_id: str
+    kind: MockEventKind
+    data: dict[str, Any] = field(default_factory=dict)
+    id: str = ""
+    at: datetime | None = None
+
+
+@dataclass(slots=True)
+class Evidence:
+    """A quote the grader cites. ``verified`` is set by code, not the model:
+    True only when the quote actually appears in the transcript."""
+
+    quote: str
+    verified: bool
+
+
+@dataclass(slots=True)
+class CriterionScore:
+    """The grader's result for one :class:`RubricCriterion` (score 1-4)."""
+
+    key: str
+    title: str
+    score: int
+    evidence: list[Evidence] = field(default_factory=list)
+    improvement: str = ""
+
+
+@dataclass(slots=True)
+class WeakArea:
+    """Something to practise next, phrased so it can become a prep :class:`Task`."""
+
+    title: str
+    why: str
+    task_name: str
+    category: Category
+    est_duration_min: int
+
+
+@dataclass(slots=True)
+class Scorecard:
+    """The grader's output for a :class:`MockSession`. ``overall_score`` is the
+    weighted mean of criterion scores, computed in code (never by the model)."""
+
+    session_id: str
+    id: str
+    overall_score: float
+    grader_model: str
+    summary: str = ""
+    criteria: list[CriterionScore] = field(default_factory=list)
+    strengths: list[str] = field(default_factory=list)
+    weak_areas: list[WeakArea] = field(default_factory=list)
     created_at: datetime | None = None
 
 

@@ -1,0 +1,7 @@
+# Preinstalled in every Python sandbox. Sandboxes have no network, so
+# generated templates may only use these (plus the standard library).
+pytest>=8.3,<9
+flask>=3.1,<4
+pydantic>=2.10,<3
+sqlalchemy>=2.0,<3
+requests>=2.32,<3

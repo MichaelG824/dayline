@@ -24,6 +24,7 @@ export interface TaskRow {
   applicationId: string | null;
   interviewId: string | null;
   problemId: string | null;
+  mockSessionId: string | null;
 }
 
 export interface PlanResponse {
@@ -131,6 +132,17 @@ function redirectForAuth(status: number): void {
   }
 }
 
+// An HTTP error with its status, so callers can tell e.g. a save conflict
+// (409) from a failure.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 async function checkOk(res: Response, message: string): Promise<Response> {
   if (res.status === 401 || res.status === 403) {
     redirectForAuth(res.status);
@@ -143,7 +155,7 @@ async function checkOk(res: Response, message: string): Promise<Response> {
     } catch {
       // non-JSON error body - keep the generic message
     }
-    throw new Error(detail || message);
+    throw new ApiError(detail || message, res.status);
   }
   return res;
 }
@@ -616,4 +628,419 @@ export async function updateProblemTag(tagId: string, input: ProblemTagInput): P
 export async function deleteProblemTag(tagId: string): Promise<void> {
   const res = await apiFetch(`/api/problem-tags/${tagId}`, { method: 'DELETE' });
   await checkOk(res, 'Failed to delete tag');
+}
+
+// ---------------------------------------------------------------------------
+// Mock interviews (the Mock tab). Mirrors dayline.api.serializers mock_*_json.
+// ---------------------------------------------------------------------------
+
+export interface MockQuestion {
+  id: string;
+  source: string;
+  sourceUrl: string | null;
+  company: string | null;
+  role: string | null;
+  roundType: string;
+  title: string;
+  promptMd: string;
+  constraints: string[];
+  followUps: string[];
+  languageHint: string | null;
+  originalText: string;
+  originalLanguage: string | null;
+  reportedOn: string | null;
+  canonicalId: string | null;
+  notes: string;
+  timesSeen: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface MockSessionSummary {
+  id: string;
+  title: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+  kind: 'transcript' | 'live';
+  status: 'live' | 'ended';
+  templateId: string | null;
+  pack: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  overallScore: number | null;
+  createdAt: string | null;
+}
+
+export interface MockQuestionDetail extends MockQuestion {
+  copies: MockQuestion[];
+  sessions: MockSessionSummary[];
+}
+
+// Every field optional so PATCH can send just what changed.
+export type MockQuestionInput = Partial<
+  Omit<MockQuestion, 'id' | 'timesSeen' | 'createdAt' | 'updatedAt'>
+>;
+
+export interface SimilarQuestion {
+  id: string;
+  title: string;
+  company: string | null;
+  score: number;
+}
+
+export interface ExtractedQuestion {
+  title: string;
+  roundType: string;
+  promptMd: string;
+  company: string | null;
+  role: string | null;
+  constraints: string[];
+  followUps: string[];
+  languageHint: string | null;
+  reportedOn: string | null;
+  similar: SimilarQuestion[];
+}
+
+export interface Extraction {
+  originalLanguage: string | null;
+  questions: ExtractedQuestion[];
+}
+
+export interface RubricCriterion {
+  key: string;
+  title: string;
+  description: string;
+  weight: number;
+}
+
+export interface MockRubric {
+  id: string;
+  name: string;
+  roundType: string | null;
+  criteria: RubricCriterion[];
+  updatedAt: string | null;
+}
+
+export interface MockRubricInput {
+  name: string;
+  roundType: string | null;
+  // key is optional on new criteria: the server derives it from the title.
+  criteria: (Omit<RubricCriterion, 'key'> & { key?: string })[];
+}
+
+export interface MockGuideline {
+  id: string;
+  name: string;
+  bodyMd: string;
+  updatedAt: string | null;
+}
+
+export interface Evidence {
+  quote: string;
+  // True only when the quote really appears in the transcript (checked in code).
+  verified: boolean;
+}
+
+export interface CriterionScore {
+  key: string;
+  title: string;
+  score: number;
+  evidence: Evidence[];
+  improvement: string;
+}
+
+export interface WeakArea {
+  title: string;
+  why: string;
+  taskName: string;
+  category: string;
+  estDurationMin: number;
+}
+
+export interface Scorecard {
+  id: string;
+  sessionId: string;
+  overallScore: number;
+  summary: string;
+  criteria: CriterionScore[];
+  strengths: string[];
+  weakAreas: WeakArea[];
+  graderModel: string;
+  createdAt: string | null;
+}
+
+export interface MockSessionDetail extends MockSessionSummary {
+  transcript: string;
+  scorecard: Scorecard | null;
+  // The scorecard's weak areas as propose_new_task proposals for confirmProposals.
+  proposals: Proposal[];
+  tasks: TaskRow[];
+  // Live sessions only.
+  templateTitle?: string | null;
+  taskMd?: string;
+  durationMin?: number | null;
+  // The file the workspace opens first.
+  openPath?: string | null;
+  testReport?: TestReport | null;
+  finalDiff?: string;
+  events?: MockEvent[];
+}
+
+// Live sessions (a sandbox per session). Mirrors services/mock_live.py and
+// the sandbox runner's JSON.
+export interface LiveTemplate {
+  id: string;
+  title: string;
+  pack: string;
+  roundType: string;
+  durationMin: number;
+  summary: string;
+}
+
+export interface LivePack {
+  name: string;
+  displayName: string;
+  editorLanguage: string;
+  state: 'pending' | 'building' | 'ready' | 'failed';
+  error: string | null;
+}
+
+export interface LiveAvailability {
+  available: boolean;
+  reason: string | null;
+  templates: LiveTemplate[];
+  packs: LivePack[];
+}
+
+export interface LiveSessionInput {
+  templateId: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+}
+
+export interface SandboxStatus {
+  // stopped: idle too long or out of time (files kept); gone: deleted.
+  state: 'running' | 'stopped' | 'gone';
+  expiresAt?: string;
+  idleTimeoutS?: number;
+  editorLanguage: string | null;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  version: string;
+}
+
+export interface FileContent {
+  path: string;
+  content: string;
+  version: string;
+}
+
+export interface TestCase {
+  name: string;
+  classname: string;
+  outcome: 'passed' | 'failed' | 'error' | 'skipped';
+  message: string;
+  duration_s: number;
+}
+
+export interface TestReport {
+  // error: the tests could not run at all; timeout: stopped at the limit.
+  status: 'passed' | 'failed' | 'error' | 'timeout';
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+  duration_s: number;
+  exit_code: number | null;
+  output: string;
+  cases: TestCase[];
+}
+
+export interface MockEvent {
+  kind: 'session_started' | 'file_saved' | 'tests_run' | 'command_run' | 'session_ended';
+  data: Record<string, unknown>;
+  at: string | null;
+}
+
+export interface MockSessionInput {
+  title: string;
+  transcript: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+}
+
+export async function getMockQuestions(): Promise<MockQuestion[]> {
+  const res = await apiFetch('/api/mock/questions');
+  return (await checkOk(res, 'Failed to load questions')).json();
+}
+
+export async function getMockQuestion(questionId: string): Promise<MockQuestionDetail> {
+  const res = await apiFetch(`/api/mock/questions/${questionId}`);
+  return (await checkOk(res, 'Failed to load question')).json();
+}
+
+export async function createMockQuestion(input: MockQuestionInput): Promise<MockQuestion> {
+  const res = await apiFetch('/api/mock/questions', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save question')).json();
+}
+
+export async function updateMockQuestion(
+  questionId: string,
+  input: MockQuestionInput
+): Promise<MockQuestion> {
+  const res = await apiFetch(`/api/mock/questions/${questionId}`, jsonInit('PATCH', input));
+  return (await checkOk(res, 'Failed to save question')).json();
+}
+
+export async function deleteMockQuestion(questionId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/questions/${questionId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete question');
+}
+
+export async function extractMockQuestions(text: string): Promise<Extraction> {
+  const res = await apiFetch('/api/mock/extract', jsonInit('POST', { text }));
+  return (await checkOk(res, 'Failed to extract questions')).json();
+}
+
+export async function getMockRubrics(): Promise<MockRubric[]> {
+  const res = await apiFetch('/api/mock/rubrics');
+  return (await checkOk(res, 'Failed to load rubrics')).json();
+}
+
+export async function createMockRubric(input: MockRubricInput): Promise<MockRubric> {
+  const res = await apiFetch('/api/mock/rubrics', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save rubric')).json();
+}
+
+export async function updateMockRubric(rubricId: string, input: MockRubricInput): Promise<MockRubric> {
+  const res = await apiFetch(`/api/mock/rubrics/${rubricId}`, jsonInit('PUT', input));
+  return (await checkOk(res, 'Failed to save rubric')).json();
+}
+
+export async function deleteMockRubric(rubricId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/rubrics/${rubricId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete rubric');
+}
+
+export async function getMockGuidelines(): Promise<MockGuideline[]> {
+  const res = await apiFetch('/api/mock/guidelines');
+  return (await checkOk(res, 'Failed to load guidelines')).json();
+}
+
+export async function createMockGuideline(input: {
+  name: string;
+  bodyMd: string;
+}): Promise<MockGuideline> {
+  const res = await apiFetch('/api/mock/guidelines', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save guideline')).json();
+}
+
+export async function updateMockGuideline(
+  guidelineId: string,
+  input: { name: string; bodyMd: string }
+): Promise<MockGuideline> {
+  const res = await apiFetch(`/api/mock/guidelines/${guidelineId}`, jsonInit('PUT', input));
+  return (await checkOk(res, 'Failed to save guideline')).json();
+}
+
+export async function deleteMockGuideline(guidelineId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/guidelines/${guidelineId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete guideline');
+}
+
+export async function getMockSessions(): Promise<MockSessionSummary[]> {
+  const res = await apiFetch('/api/mock/sessions');
+  return (await checkOk(res, 'Failed to load sessions')).json();
+}
+
+export async function getMockSession(sessionId: string): Promise<MockSessionDetail> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}`);
+  return (await checkOk(res, 'Failed to load session')).json();
+}
+
+export async function createMockSession(input: MockSessionInput): Promise<MockSessionDetail> {
+  const res = await apiFetch('/api/mock/sessions', jsonInit('POST', input));
+  return (await checkOk(res, 'Failed to save session')).json();
+}
+
+export async function gradeMockSession(sessionId: string): Promise<MockSessionDetail> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/grade`, { method: 'POST' });
+  return (await checkOk(res, 'Grading failed')).json();
+}
+
+export async function deleteMockSession(sessionId: string): Promise<void> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}`, { method: 'DELETE' });
+  await checkOk(res, 'Failed to delete session');
+}
+
+export async function getLiveAvailability(): Promise<LiveAvailability> {
+  const res = await apiFetch('/api/mock/live');
+  return (await checkOk(res, 'Failed to load practice repos')).json();
+}
+
+export async function startLiveSession(input: LiveSessionInput): Promise<MockSessionDetail> {
+  const res = await apiFetch('/api/mock/live/sessions', jsonInit('POST', input));
+  return (await checkOk(res, 'Could not start the session')).json();
+}
+
+export async function getSandboxStatus(sessionId: string): Promise<SandboxStatus> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/sandbox`);
+  return (await checkOk(res, 'Failed to load the sandbox')).json();
+}
+
+export async function resumeSandbox(sessionId: string): Promise<SandboxStatus> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/resume`, { method: 'POST' });
+  return (await checkOk(res, 'Could not resume the sandbox')).json();
+}
+
+function filePath(sessionId: string, path: string): string {
+  return `/api/mock/sessions/${sessionId}/files/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+export async function listWorkspaceFiles(sessionId: string): Promise<WorkspaceFile[]> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/files`);
+  return (await checkOk(res, 'Failed to list files')).json();
+}
+
+export async function readWorkspaceFile(sessionId: string, path: string): Promise<FileContent> {
+  const res = await apiFetch(filePath(sessionId, path));
+  return (await checkOk(res, `Could not open ${path}`)).json();
+}
+
+// baseVersion: the version the editor loaded ('' for a new file). A file that
+// changed since then fails with ApiError status 409.
+export async function writeWorkspaceFile(
+  sessionId: string,
+  path: string,
+  content: string,
+  baseVersion: string | null,
+): Promise<{ path: string; version: string }> {
+  const res = await apiFetch(filePath(sessionId, path), jsonInit('PUT', { content, baseVersion }));
+  return (await checkOk(res, `Could not save ${path}`)).json();
+}
+
+export async function runWorkspaceTests(sessionId: string): Promise<TestReport> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/tests`, { method: 'POST' });
+  return (await checkOk(res, 'Could not run the tests')).json();
+}
+
+export async function endLiveSession(sessionId: string): Promise<MockSessionDetail> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/end`, { method: 'POST' });
+  return (await checkOk(res, 'Could not end the session')).json();
+}
+
+// The terminal WebSocket. Same origin as the API (the Next dev server and
+// Caddy both proxy /api, upgrades included).
+export function terminalUrl(sessionId: string, cols: number, rows: number): string {
+  const base = API || window.location.origin;
+  const url = new URL(`/api/mock/sessions/${sessionId}/terminal`, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.search = `cols=${cols}&rows=${rows}`;
+  return url.toString();
 }

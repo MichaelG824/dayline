@@ -1,0 +1,11 @@
+{
+  "name": "dayline-pack-typescript",
+  "private": true,
+  "description": "Preinstalled in every TypeScript sandbox. Sandboxes have no network, so generated templates may only use these.",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0"
+  }
+}

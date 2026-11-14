@@ -4,6 +4,7 @@ A personal planning agent that turns a task list into a **time-blocked daily pla
 
 Tasks, applications, and upcoming interviews persist in Supabase.
 Day-scheduling stays in-memory; interviews can sync to Google Calendar (see `GOOGLE_SETUP.md`).
+A private **Mock** tab holds an interview question bank (paste a 1point3acres post, in any language, and review the questions it extracts), your rubrics and grading standards, and a grader that scores a mock transcript with quoted evidence; weak areas become prep tasks through the same confirm step as chat.
 A chat panel is **analysis-first** (plan, backlog + interviews, outcomes/retros): it advises by default and only proposes concrete changes when you ask or a fix is clearly needed. Mutations always stay propose → multi-select confirm → apply (never auto-apply). Planner preferences and a lightweight outcome log feed the assistant; see `AGENTS.md` and `api/chat.py`.
 
 ## Architecture
@@ -100,6 +101,8 @@ The `google` extra backs `GoogleCalendarClient` (see `GOOGLE_SETUP.md`) and is n
 2. In the SQL Editor, run `supabase/schema.sql` in its own query.
 3. Then run `supabase/migrations/002_dayline_features.sql` in a separate query.
 4. Then run `supabase/migrations/003_seed_category_weights.sql` in a third, separate query.
+
+5. Run every later migration (`004_...` onward, including `011_mock_interviews.sql`) in order, each in its own query.
 
 Steps 3 and 4 must be separate runs - Postgres refuses to let a newly added enum value be used in the same transaction that added it, so combining them fails with `unsafe use of new value`.
 
