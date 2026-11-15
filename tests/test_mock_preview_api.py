@@ -274,3 +274,20 @@ def test_built_in_full_stack_templates_stay_within_their_packs() -> None:
         manifest = packs[template.pack].dependencies
         if manifest is not None:
             assert project_problems(manifest, template.files) == [], template.id
+
+
+def test_the_assistant_reads_dev_server_logs_only_where_there_are_servers() -> None:
+    from dayline.api.services.mock_preview import server_logs_reader
+
+    sandbox = InMemorySandboxClient()
+    sandbox.create("py", "python", {})
+    sandbox.create("nn", "next-nest", {}, "/api/preview/nn/" + "t" * 32)
+    assert server_logs_reader(sandbox, "py") is None
+    reader = server_logs_reader(sandbox, "nn")
+    assert reader is not None
+    assert reader() == (
+        "== api (port 4000, ready) ==\napi is ready\n\n== web (port 3000, ready) ==\nweb is ready"
+    )
+    sandbox.unavailable = True
+    assert reader().startswith("Could not read the server logs")
+    assert server_logs_reader(sandbox, "nn") is None

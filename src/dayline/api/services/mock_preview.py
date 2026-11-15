@@ -39,7 +39,7 @@ import contextlib
 import html
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from fastapi import HTTPException, Request, WebSocket
@@ -169,6 +169,36 @@ def preview_reloaded(ctx: AppContext, session_id: str, server: str) -> None:
     event(ctx, session_id, MockEventKind.PREVIEW_RELOADED, server=server)
 
 
+# Per server, for the assistant: the end of each log is what explains a crash.
+ASSISTANT_LOG_LINES = 200
+
+
+def server_logs_reader(sandbox: SandboxClient, session_id: str) -> Callable[[], str] | None:
+    """The in-session assistant's view of the dev servers' logs (its
+    ``Workspace.server_logs``), or ``None`` when the pack runs none (or the
+    runner predates dev servers)."""
+    try:
+        if not sandbox.servers(session_id):
+            return None
+    except (SandboxUnavailable, SandboxRequestError):
+        return None
+
+    def read() -> str:
+        try:
+            parts = []
+            for server in sandbox.servers(session_id):
+                lines = sandbox.server_logs(session_id, server["name"], 0)["lines"]
+                body = "\n".join(lines[-ASSISTANT_LOG_LINES:]) or "(no output)"
+                parts.append(
+                    f"== {server['name']} (port {server['port']}, {server['state']}) ==\n{body}"
+                )
+            return "\n\n".join(parts)
+        except (SandboxUnavailable, SandboxRequestError) as exc:
+            return f"Could not read the server logs: {exc}"
+
+    return read
+
+
 # -- header rewriting (pure) -----------------------------------------------------
 
 
@@ -243,9 +273,7 @@ def preflight(request_headers: Any) -> Response:
 
 def _wants_page(headers: Any) -> bool:
     dest = headers.get("sec-fetch-dest", "")
-    return dest in ("document", "iframe") or (
-        not dest and "text/html" in headers.get("accept", "")
-    )
+    return dest in ("document", "iframe") or (not dest and "text/html" in headers.get("accept", ""))
 
 
 def error_page(status_code: int, detail: str, request_headers: Any) -> Response:

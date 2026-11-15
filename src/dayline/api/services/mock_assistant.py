@@ -36,6 +36,7 @@ from dayline.api.services.mock_live import (
     sandbox_client,
     write_file,
 )
+from dayline.api.services.mock_preview import server_logs_reader
 from dayline.mock import assistant_model
 from dayline.mock.assistant import (
     MODES,
@@ -107,6 +108,7 @@ def _workspace(ctx: AppContext, session_id: str) -> Workspace:
         snapshot=lambda: dict(sandbox.snapshot(session_id)["files"]),
         test_report=lambda: _get_session(ctx, session_id).test_report,
         commands=lambda: sandbox.commands(session_id),
+        server_logs=server_logs_reader(sandbox, session_id),
     )
 
 
