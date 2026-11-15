@@ -7,8 +7,10 @@ Each pack is a ``Dockerfile`` plus a ``pack.toml``::
     editor_language = "python"        # CodeMirror language id for the editor
     test_cmd = "python -m pytest -q --junitxml={junit}"
     test_timeout_s = 60
+    # Optional: runs only the test files in {hidden} (staged rounds' hidden tests).
+    hidden_test_cmd = "python -m pytest -q --junitxml={junit} {hidden}"
 
-Every ``test_cmd`` writes JUnit XML to ``{junit}``, so one parser
+Every test command writes JUnit XML to ``{junit}``, so one parser
 (``junit.py``) reads results for every language. Adding a language means
 adding a folder, not code.
 
@@ -26,6 +28,9 @@ from pathlib import Path
 
 # Where each test run writes its JUnit XML inside the sandbox (on the tmpfs).
 JUNIT_PATH = "/tmp/dayline-junit.xml"
+# Where hidden test files go for one run, relative to /workspace. Inside the
+# ignored ".dayline" folder, so they never show in the file tree or a snapshot.
+HIDDEN_TESTS_DIR = ".dayline/hidden"
 
 _NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 DEFAULT_TEST_TIMEOUT_S = 60
@@ -45,6 +50,8 @@ class Pack:
     test_timeout_s: int
     directory: Path
     image: str
+    # None when the pack cannot run hidden tests.
+    hidden_test_cmd: str | None = None
 
 
 def pack_digest(directory: Path) -> str:
@@ -73,6 +80,11 @@ def load_pack(directory: Path) -> Pack:
     test_cmd = data.get("test_cmd")
     if not isinstance(test_cmd, str) or "{junit}" not in test_cmd:
         raise PackError(f"{toml_path}: test_cmd must write JUnit XML to {{junit}}")
+    hidden_cmd = data.get("hidden_test_cmd")
+    if hidden_cmd is not None and not (
+        isinstance(hidden_cmd, str) and "{junit}" in hidden_cmd and "{hidden}" in hidden_cmd
+    ):
+        raise PackError(f"{toml_path}: hidden_test_cmd must use both {{junit}} and {{hidden}}")
     timeout = data.get("test_timeout_s", DEFAULT_TEST_TIMEOUT_S)
     if not isinstance(timeout, int) or not 1 <= timeout <= MAX_TEST_TIMEOUT_S:
         raise PackError(f"{toml_path}: test_timeout_s must be 1-{MAX_TEST_TIMEOUT_S}")
@@ -85,6 +97,11 @@ def load_pack(directory: Path) -> Pack:
         test_timeout_s=timeout,
         directory=directory,
         image=f"dayline-pack-{name}:{pack_digest(directory)}",
+        hidden_test_cmd=(
+            hidden_cmd.replace("{junit}", JUNIT_PATH).replace("{hidden}", HIDDEN_TESTS_DIR)
+            if hidden_cmd
+            else None
+        ),
     )
 
 

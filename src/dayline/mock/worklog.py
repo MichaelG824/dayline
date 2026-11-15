@@ -1,6 +1,6 @@
 """What a candidate did in a live session, as text: the diff against the
-starting repo, line counts per save, and a compact timeline plus final test
-results for the grader (and, later, the interviewer).
+starting repo, line counts per save, a compact timeline plus final test
+results for the grader, and a staged round's interviewer chat as a transcript.
 
 Pure functions over models - no I/O.
 """
@@ -16,6 +16,8 @@ from dayline.models import MockEvent, MockEventKind, MockSession
 MAX_DIFF_CHARS = 200_000
 MAX_TIMELINE_LINES = 120
 MAX_FAILURES_SHOWN = 10
+# The interviewer chat: a transcript of its own, so not timeline lines.
+CHAT_KINDS = frozenset({MockEventKind.INTERVIEWER_MESSAGE, MockEventKind.CANDIDATE_MESSAGE})
 
 
 def file_diff(path: str, before: str | None, after: str | None) -> str:
@@ -76,6 +78,16 @@ def _event_line(event: MockEvent, saves: int = 1) -> str:
         )
     if event.kind is MockEventKind.COMMAND_RUN:
         return f"ran in the terminal: {d.get('command')} (exit {d.get('exitCode')})"
+    if event.kind is MockEventKind.STAGE_TESTS_RUN:
+        return (
+            f"ran stage {d.get('stage')}'s hidden tests: {d.get('status')} "
+            f"({d.get('passed', 0)} passed, {d.get('failed', 0)} failed, "
+            f"{d.get('errors', 0)} errors)"
+        )
+    if event.kind is MockEventKind.STAGE_PASSED:
+        return f"passed stage {d.get('stage')}"
+    if event.kind is MockEventKind.STAGE_SKIPPED:
+        return f"skipped stage {d.get('stage')} without passing it"
     if event.kind is MockEventKind.SESSION_STARTED:
         return "session started"
     return "session ended"
@@ -96,6 +108,8 @@ def timeline(events: list[MockEvent], start: datetime | None) -> list[str]:
     count) so autosave does not drown the record but the time spent shows."""
     entries: list[_Entry] = []
     for event in events:
+        if event.kind in CHAT_KINDS:
+            continue
         last = entries[-1] if entries else None
         if (
             last is not None
@@ -123,6 +137,16 @@ def timeline(events: list[MockEvent], start: datetime | None) -> list[str]:
         half = MAX_TIMELINE_LINES // 2
         lines = [*lines[:half], f"… {len(lines) - 2 * half} more …", *lines[-half:]]
     return lines
+
+
+def chat_transcript(events: list[MockEvent], start: datetime | None) -> str:
+    """A staged round's interviewer chat as ``[mm:ss] Speaker: text`` lines."""
+    lines = []
+    for event in events:
+        if event.kind in CHAT_KINDS:
+            who = "Interviewer" if event.kind is MockEventKind.INTERVIEWER_MESSAGE else "Candidate"
+            lines.append(f"[{_clock(event.at, start)}] {who}: {event.data.get('text', '')}")
+    return "\n".join(lines)
 
 
 def tests_summary(report: dict[str, object] | None) -> str:

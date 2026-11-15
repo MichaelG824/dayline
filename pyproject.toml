@@ -75,6 +75,9 @@ python_version = "3.11"
 mypy_path = "src:sandbox/runner/src"
 packages = ["dayline", "dayline_runner"]
 strict = true
+# Staged-round content (starter code, hidden tests, references) is written
+# like interview code, untyped; tests/test_staged_lru.py runs it instead.
+exclude = ["src/dayline/mock/staged_problems/"]
 
 # The google extra ships no type stubs/py.typed marker; GoogleCalendarClient
 # is the only caller and already narrows its surface to plain str/dict types.

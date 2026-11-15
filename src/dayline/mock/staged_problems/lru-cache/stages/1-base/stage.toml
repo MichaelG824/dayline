@@ -1,0 +1,13 @@
+title = "Base LRU cache"
+# Suggested pace, shown next to the time spent.
+target_min = 15
+
+[[edge_cases]]
+id = "update_existing_key"
+title = "Re-putting a key updates it in place and makes it most recent"
+tests = ["test_put_existing_key_updates_value_and_recency", "test_updating_a_key_never_evicts"]
+
+[[edge_cases]]
+id = "falsy_values"
+title = "Falsy values (0, \"\", False) are cached like any other"
+tests = ["test_falsy_values_are_cached"]

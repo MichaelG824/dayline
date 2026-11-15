@@ -13,19 +13,23 @@ from typing import Any
 
 from dayline.adapters.application_source import SupabaseApplicationSource
 from dayline.adapters.task_source import SupabaseTaskSource
+from dayline.mock.staged import StagedProblem, active_index, score_round
 from dayline.models import (
     Application,
     Interview,
     MockEvent,
+    MockEventKind,
     MockGuideline,
     MockQuestion,
     MockRubric,
     MockSession,
+    MockSessionStatus,
     Plan,
     Problem,
     ProblemTag,
     Scorecard,
     Solution,
+    StageStatus,
     Task,
 )
 
@@ -251,9 +255,82 @@ def mock_session_json(session: MockSession, scorecard: Scorecard | None) -> dict
         "startedAt": _iso(session.started_at),
         "endedAt": _iso(session.ended_at),
         "overallScore": scorecard.overall_score if scorecard else None,
+        "stagedProblemId": session.staged_problem_id,
+        "stageCount": len(session.stages) if session.staged_problem_id else None,
+        "stagesPassed": (
+            sum(s.status is StageStatus.PASSED for s in session.stages)
+            if session.staged_problem_id
+            else None
+        ),
         "createdAt": _iso(session.created_at),
     }
 
 
 def mock_event_json(event: MockEvent) -> dict[str, Any]:
     return {"kind": event.kind.value, "data": event.data, "at": _iso(event.at)}
+
+
+_CHAT_ROLES = {
+    MockEventKind.INTERVIEWER_MESSAGE: "interviewer",
+    MockEventKind.CANDIDATE_MESSAGE: "candidate",
+}
+
+
+def chat_json(events: list[MockEvent]) -> list[dict[str, Any]]:
+    """A staged round's interviewer chat, oldest first."""
+    return [
+        {
+            "role": _CHAT_ROLES[e.kind],
+            "text": e.data.get("text", ""),
+            "stage": e.data.get("stage"),
+            "at": _iso(e.at),
+        }
+        for e in events
+        if e.kind in _CHAT_ROLES
+    ]
+
+
+def staged_round_json(
+    problem: StagedProblem, session: MockSession, events: list[MockEvent], now: datetime
+) -> dict[str, Any]:
+    """The candidate's view of a staged round. Hidden tests and interviewer
+    notes never leave the server; a locked stage shows only its number, and a
+    live round's edge cases stay hidden until their stage is over (their
+    titles would give the cases away)."""
+    ended = session.status is MockSessionStatus.ENDED
+    active = active_index(session.stages)
+    stages = []
+    for stage, attempt, result in zip(
+        problem.stages, session.stages, score_round(problem, session.stages, now), strict=True
+    ):
+        locked = attempt.status is StageStatus.LOCKED
+        show_edges = ended or attempt.status not in (StageStatus.ACTIVE, StageStatus.LOCKED)
+        stages.append(
+            {
+                "number": stage.number,
+                "title": None if locked else stage.title,
+                "promptMd": None if locked else stage.prompt_md,
+                "targetMin": None if locked else stage.target_min,
+                "status": attempt.status.value,
+                "startedAt": _iso(attempt.started_at),
+                "finishedAt": _iso(attempt.finished_at),
+                "timeSpentS": result.time_spent_s,
+                "runs": attempt.runs,
+                "report": attempt.report,
+                "design": (
+                    {"kept": result.design.kept, "verdict": result.design.verdict}
+                    if result.design
+                    else None
+                ),
+                "edgeCases": [
+                    {"id": e.id, "title": e.title, "outcome": e.outcome}
+                    for e in (result.edge_cases if show_edges else ())
+                ],
+            }
+        )
+    return {
+        "problemId": problem.id,
+        "activeStage": None if active is None else active + 1,
+        "stages": stages,
+        "chat": chat_json(events),
+    }

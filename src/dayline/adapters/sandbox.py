@@ -16,7 +16,7 @@ import contextlib
 import copy
 import hashlib
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
@@ -86,6 +86,12 @@ class SandboxClient(Protocol):
     def run_tests(self, sandbox_id: str) -> dict[str, Any]:
         """``{status, passed, failed, errors, skipped, duration_s, exit_code,
         output, cases: [{name, classname, outcome, message, duration_s}]}``."""
+        ...
+
+    def run_hidden_tests(self, sandbox_id: str, files: dict[str, str]) -> dict[str, Any]:
+        """Run test files the candidate never sees (``{path: content}``)
+        against the workspace; same report shape as :meth:`run_tests`. The
+        files exist in the sandbox for this run only."""
         ...
 
     def snapshot(self, sandbox_id: str) -> dict[str, Any]:
@@ -184,6 +190,24 @@ class RunnerSandboxClient:
         )
         return result
 
+    def run_hidden_tests(self, sandbox_id: str, files: dict[str, str]) -> dict[str, Any]:
+        try:
+            result: dict[str, Any] = self._request(
+                "POST",
+                f"/sandboxes/{sandbox_id}/hidden-tests",
+                json={"files": files},
+                timeout=_TEST_TIMEOUT_S,
+            )
+        except SandboxRequestError as exc:
+            # FastAPI's bare 404 for a route the runner does not have yet (a
+            # missing sandbox says "No sandbox ...").
+            if exc.status_code == 404 and exc.detail == "Not Found":
+                raise SandboxRequestError(
+                    501, "The sandbox runner is out of date: redeploy it to run staged rounds"
+                ) from exc
+            raise
+        return result
+
     def snapshot(self, sandbox_id: str) -> dict[str, Any]:
         result: dict[str, Any] = self._request("GET", f"/sandboxes/{sandbox_id}/snapshot")
         return result
@@ -243,8 +267,9 @@ class _EchoTerminal:
 
 class InMemorySandboxClient:
     """A working fake :class:`SandboxClient` for tests: files live in a dict,
-    test runs return ``next_report`` (set it to script a run), and the
-    terminal echoes."""
+    test runs return ``next_report`` (set it to script a run), hidden test
+    runs return ``hidden_report(files)`` (replace it to script them; each
+    run's files are kept in ``hidden_runs``), and the terminal echoes."""
 
     PACKS = [
         {"name": "python", "displayName": "Python 3.12", "editorLanguage": "python"},
@@ -254,6 +279,12 @@ class InMemorySandboxClient:
     def __init__(self) -> None:
         self.sandboxes: dict[str, dict[str, Any]] = {}
         self.next_report: dict[str, Any] = {"status": "passed", "passed": 1, "cases": []}
+        self.hidden_runs: list[dict[str, str]] = []
+        self.hidden_report: Callable[[dict[str, str]], dict[str, Any]] = lambda _files: {
+            "status": "passed",
+            "passed": 1,
+            "cases": [],
+        }
         self.terminals: list[_EchoTerminal] = []
         self.unavailable = False
 
@@ -336,6 +367,11 @@ class InMemorySandboxClient:
     def run_tests(self, sandbox_id: str) -> dict[str, Any]:
         self._get(sandbox_id)
         return copy.deepcopy(self.next_report)
+
+    def run_hidden_tests(self, sandbox_id: str, files: dict[str, str]) -> dict[str, Any]:
+        self._get(sandbox_id)
+        self.hidden_runs.append(dict(files))
+        return copy.deepcopy(self.hidden_report(files))
 
     def snapshot(self, sandbox_id: str) -> dict[str, Any]:
         return {"files": dict(self._get(sandbox_id, running=False)["files"]), "skipped": []}

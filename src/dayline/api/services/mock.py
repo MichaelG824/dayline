@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 import re
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import anthropic
@@ -28,9 +28,10 @@ from dayline.api.serializers import (
     mock_rubric_json,
     mock_session_json,
     scorecard_json,
+    staged_round_json,
     task_json,
 )
-from dayline.mock import grader_model, mock_model
+from dayline.mock import grader_model, mock_model, staged
 from dayline.mock.grader import GradeInput, GradingError, grade, weak_area_proposals
 from dayline.mock.ingest import ExtractionError, extract_questions, find_similar
 from dayline.mock.templates import builtin_templates
@@ -380,7 +381,9 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
         "tasks": [task_json(t, ctx.task_source) for t in linked],
     }
     if session.kind is MockSessionKind.LIVE:
+        events = ctx.mock_source.list_events(session_id)
         template = builtin_templates().get(session.template_id or "")
+        problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
         detail |= {
             "templateTitle": template.title if template else None,
             "taskMd": template.task_md if template else "",
@@ -388,8 +391,17 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
             "openPath": template.open_path if template else None,
             "testReport": session.test_report,
             "finalDiff": session.final_diff,
-            "events": [mock_event_json(e) for e in ctx.mock_source.list_events(session_id)],
+            "events": [mock_event_json(e) for e in events],
+            "staged": None,
         }
+        if problem is not None:
+            detail |= {
+                "templateTitle": problem.title,
+                "taskMd": problem.overview_md,
+                "durationMin": problem.duration_min,
+                "openPath": problem.open_path,
+                "staged": staged_round_json(problem, session, events, datetime.now(UTC)),
+            }
     return detail
 
 
@@ -457,12 +469,18 @@ def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
         except KeyError:
             question = None
 
+    events = ctx.mock_source.list_events(session_id)
+    work = work_record(session, events)
+    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+    if problem is not None:
+        now = session.ended_at or datetime.now(UTC)
+        work = f"{staged.round_record(problem, session.stages, now)}\n\n{work}"
     data = GradeInput(
         transcript=session.transcript,
         rubric=rubric,
         guideline=guideline,
         question=question,
-        work=work_record(session, ctx.mock_source.list_events(session_id)),
+        work=work,
     )
     try:
         card = grade(ctx.anthropic_client, grader_model(), data, session.id)

@@ -46,7 +46,7 @@ from dayline_runner.commands import (
 )
 from dayline_runner.config import Settings
 from dayline_runner.junit import TestReport, build_report, parse_junit
-from dayline_runner.packs import JUNIT_PATH, Pack
+from dayline_runner.packs import HIDDEN_TESTS_DIR, JUNIT_PATH, Pack
 from dayline_runner.workspace import (
     IGNORED_DIRS,
     MAX_FILE_BYTES,
@@ -484,15 +484,19 @@ class SandboxManager:
 
     # -- tests ---------------------------------------------------------------
 
-    def run_tests(self, sandbox_id: str) -> TestReport:
-        container = self._running(sandbox_id)
+    def _pack_of(self, container: Container) -> Pack:
         pack = self._packs.get(container.labels.get(LABEL_PACK, ""))
         if pack is None:
             raise SandboxError("This sandbox's language pack no longer exists")
-        script = f"rm -f {JUNIT_PATH}; exec {pack.test_cmd}"
-        cmd = ["timeout", "-k", "5", str(pack.test_timeout_s), "sh", "-c", script]
+        return pack
+
+    def _run_test_cmd(
+        self, sandbox_id: str, container: Container, pack: Pack, cmd: str
+    ) -> TestReport:
+        script = f"rm -f {JUNIT_PATH}; exec {cmd}"
+        timeout = ["timeout", "-k", "5", str(pack.test_timeout_s), "sh", "-c", script]
         started = time.monotonic()
-        exit_code, output = self._exec(container, cmd, env=TEST_ENV)
+        exit_code, output = self._exec(container, timeout, env=TEST_ENV)
         duration = time.monotonic() - started
         timed_out = exit_code in _TIMEOUT_EXIT_CODES
 
@@ -510,6 +514,35 @@ class SandboxManager:
         return build_report(
             cases, exit_code=exit_code, output=text, duration_s=duration, timed_out=timed_out
         )
+
+    def run_tests(self, sandbox_id: str) -> TestReport:
+        container = self._running(sandbox_id)
+        pack = self._pack_of(container)
+        return self._run_test_cmd(sandbox_id, container, pack, pack.test_cmd)
+
+    def run_hidden_tests(self, sandbox_id: str, files: dict[str, str]) -> TestReport:
+        """Run test files the candidate never sees (a staged round's hidden
+        tests) against the workspace. They are copied into the ignored
+        ``.dayline/hidden`` folder for this run only and deleted afterwards."""
+        container = self._running(sandbox_id)
+        pack = self._pack_of(container)
+        if pack.hidden_test_cmd is None:
+            raise SandboxError(f"The {pack.display_name} pack cannot run hidden tests")
+        if not files:
+            raise SandboxError("No hidden test files")
+        encoded = {
+            f"{HIDDEN_TESTS_DIR}/{clean_path(path)}": content.encode()
+            for path, content in files.items()
+        }
+        if any(len(content) > MAX_FILE_BYTES for content in encoded.values()):
+            raise SandboxError(f"Files must be under {MAX_FILE_BYTES // 1024} KB")
+        clear = ["rm", "-rf", "--", HIDDEN_TESTS_DIR]
+        self._exec(container, clear)
+        try:
+            container.put_archive(WORKSPACE, file_tar(encoded))
+            return self._run_test_cmd(sandbox_id, container, pack, pack.hidden_test_cmd)
+        finally:
+            self._exec(container, clear)
 
     # -- terminal ------------------------------------------------------------
 
