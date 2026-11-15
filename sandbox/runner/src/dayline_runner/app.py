@@ -19,13 +19,20 @@ from typing import Annotated, Any
 
 import docker
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from dayline_runner.config import Settings
 from dayline_runner.manager import SandboxError, SandboxManager
 from dayline_runner.packs import load_packs
+from dayline_runner.preview import (
+    PREVIEW_BASE_HEADER,
+    PREVIEW_ERROR_HEADER,
+    PreviewProxy,
+    raw_suffix,
+)
+from dayline_runner.tunnel import TunnelStream
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +41,12 @@ class CreateRequest(BaseModel):
     id: str
     pack: str
     files: dict[str, str] = Field(default_factory=dict)
+    # The path dev servers are previewed under (see manager.create).
+    previewBase: str | None = None  # noqa: N815 - wire format is camelCase
+
+
+class FilesRequest(BaseModel):
+    files: dict[str, str]
 
 
 class HiddenTestsRequest(BaseModel):
@@ -64,6 +77,7 @@ def require_secret(request: Request, authorization: Annotated[str | None, Header
 
 
 Manager = Annotated[SandboxManager, Depends(get_manager)]
+PREVIEW_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 
 def create_app(manager: SandboxManager | None = None, settings: Settings | None = None) -> FastAPI:
@@ -78,6 +92,13 @@ def create_app(manager: SandboxManager | None = None, settings: Settings | None 
             app.state.manager.start_background()
         yield
         app.state.manager.stop_background()
+        await preview.aclose()
+
+    async def open_tunnel(sandbox_id: str, port: int) -> TunnelStream:
+        sock = await run_in_threadpool(app.state.manager.open_port, sandbox_id, port)
+        return await TunnelStream.open(sock)
+
+    preview = PreviewProxy(open_tunnel)
 
     app = FastAPI(title="Dayline sandbox runner", lifespan=lifespan)
     app.state.manager = manager
@@ -101,9 +122,14 @@ def create_app(manager: SandboxManager | None = None, settings: Settings | None 
     def packs(m: Manager) -> list[dict[str, Any]]:
         return m.pack_statuses()
 
+    @app.post("/packs/{pack}/check", dependencies=auth)
+    def check_dependencies(pack: str, body: FilesRequest, m: Manager) -> dict[str, Any]:
+        """Whether a project's files stay within the pack's dependencies."""
+        return {"problems": m.dependency_problems(pack, body.files)}
+
     @app.post("/sandboxes", status_code=201, dependencies=auth)
     def create(body: CreateRequest, m: Manager) -> dict[str, Any]:
-        return m.create(body.id, body.pack, body.files)
+        return m.create(body.id, body.pack, body.files, body.previewBase)
 
     @app.get("/sandboxes/{sandbox_id}", dependencies=auth)
     def info(sandbox_id: str, m: Manager) -> dict[str, Any]:
@@ -149,6 +175,60 @@ def create_app(manager: SandboxManager | None = None, settings: Settings | None 
     @app.post("/sandboxes/{sandbox_id}/hidden-tests", dependencies=auth)
     def run_hidden_tests(sandbox_id: str, body: HiddenTestsRequest, m: Manager) -> dict[str, Any]:
         return m.run_hidden_tests(sandbox_id, body.files).to_json()
+
+    @app.get("/sandboxes/{sandbox_id}/servers", dependencies=auth)
+    def servers(sandbox_id: str, m: Manager) -> list[dict[str, Any]]:
+        return m.server_statuses(sandbox_id)
+
+    @app.post("/sandboxes/{sandbox_id}/servers/{name}/{action}", dependencies=auth)
+    def server_action(sandbox_id: str, name: str, action: str, m: Manager) -> list[dict[str, Any]]:
+        return m.server_action(sandbox_id, name, action)
+
+    @app.get("/sandboxes/{sandbox_id}/servers/{name}/logs", dependencies=auth)
+    def server_logs(sandbox_id: str, name: str, m: Manager, since: int = 0) -> dict[str, Any]:
+        return m.server_logs(sandbox_id, name, since)
+
+    preview_route = "/sandboxes/{sandbox_id}/preview/{port}"
+
+    @app.api_route(
+        preview_route, methods=PREVIEW_METHODS, dependencies=auth, include_in_schema=False
+    )
+    @app.api_route(
+        preview_route + "/{path:path}",
+        methods=PREVIEW_METHODS,
+        dependencies=auth,
+        include_in_schema=False,
+    )
+    async def preview_http(sandbox_id: str, port: int, request: Request, m: Manager) -> Response:
+        """The dev server on ``port``, for the preview (see preview.py)."""
+        base = request.headers.get(PREVIEW_BASE_HEADER, "")
+        suffix = raw_suffix(request.scope)
+        try:
+            upstream = await run_in_threadpool(m.preview_path, sandbox_id, port, base, suffix)
+        except SandboxError as exc:
+            return JSONResponse(
+                {"detail": exc.message},
+                status_code=exc.status_code,
+                headers={PREVIEW_ERROR_HEADER: "1"},
+            )
+        return await preview.http(request, sandbox_id, port, upstream)
+
+    @app.websocket(preview_route)
+    @app.websocket(preview_route + "/{path:path}")
+    async def preview_ws(ws: WebSocket, sandbox_id: str, port: int) -> None:
+        """The dev server's WebSockets (e.g. hot reload) for the preview."""
+        if not _authorized(ws.headers.get("authorization"), ws.app.state.settings.secret):
+            await ws.close(code=1008)
+            return
+        m: SandboxManager = ws.app.state.manager
+        base = ws.headers.get(PREVIEW_BASE_HEADER, "")
+        suffix = raw_suffix(ws.scope)
+        try:
+            upstream = await run_in_threadpool(m.preview_path, sandbox_id, port, base, suffix)
+        except SandboxError as exc:
+            await ws.close(code=4000 + exc.status_code, reason=exc.message[:120])
+            return
+        await preview.websocket(ws, sandbox_id, port, upstream)
 
     @app.websocket("/sandboxes/{sandbox_id}/pty")
     async def pty(ws: WebSocket, sandbox_id: str, cols: int = 80, rows: int = 24) -> None:

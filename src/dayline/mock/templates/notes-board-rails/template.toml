@@ -1,0 +1,7 @@
+title = "Notes board: a Rails app"
+pack = "rails"
+round_type = "AI-assisted project"
+duration_min = 45
+# The file the editor opens first.
+open = "README.md"
+summary = "A small Rails notes app (SQLite). Add search, then deleting notes, and check it in the preview."
