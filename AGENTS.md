@@ -61,6 +61,8 @@ Production is one container (`Dockerfile` + Caddy) so the UI and API share an or
 Prefer Cloud Run `--min-instances=0 --timeout=300` so the service sleeps when idle and chat is not killed by a 10s hobby timeout.
 `AUTH_SECRET` must be stable across cold starts.
 Do not put a public URL in front of the API until Google OAuth env is set.
+The production sandbox runner lives on its own private GCE VM, not in the Cloud Run container (`deploy/sandbox-vm/README.md`); a Cloud Run deploy never updates it, so re-run `deploy/sandbox-vm/setup.sh` after changing `sandbox/`.
+Cloud Run traffic on `dayline` is pinned to named revisions (not "latest"), so a new revision gets 0% until `gcloud run services update-traffic`; read the new revision from `status.latestCreatedRevisionName` (`latestReadyRevisionName` can lag).
 
 ## Commands
 

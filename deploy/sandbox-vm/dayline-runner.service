@@ -1,0 +1,34 @@
+# The Dayline sandbox runner (sandbox/runner). Installed by vm-install.sh.
+[Unit]
+Description=Dayline sandbox runner
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=dayline-runner
+Group=dayline-runner
+# Docker socket access is root-equivalent on this VM. That is why the runner
+# lives alone on a VM with no service account and no public address.
+SupplementaryGroups=docker
+EnvironmentFile=/etc/dayline-runner/env
+Environment=SANDBOX_PACKS_DIR=/opt/dayline-runner/sandbox/packs
+Environment=SANDBOX_RUNTIME=runsc
+Environment=HOME=/var/lib/dayline-runner
+StateDirectory=dayline-runner
+ExecStart=/opt/dayline-runner/venv/bin/uvicorn dayline_runner.app:create_app --factory --host 0.0.0.0 --port 8100 --no-server-header
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
