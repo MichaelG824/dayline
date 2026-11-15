@@ -309,3 +309,17 @@ def test_generating_needs_the_sandbox_runner(client: TestClient, ctx: SimpleName
     ctx.sandbox = None
     res = client.post(BASE, json=BODY)
     assert res.status_code == 503 and "SANDBOX_RUNNER_URL" in res.json()["detail"]
+
+
+def test_the_supabase_source_reads_a_malformed_id_as_absent() -> None:
+    from dayline.adapters.generated_source import SupabaseGeneratedProjectSource
+
+    class Unreachable:
+        def table(self, _name: str) -> Any:
+            raise AssertionError("a malformed id must not reach Postgres")
+
+    source = SupabaseGeneratedProjectSource(Unreachable())
+    for read in (lambda: source.get(ALLOWED, "old-problem"), lambda: source.get_any("x")):
+        with pytest.raises(KeyError):
+            read()
+    source.delete(ALLOWED, "not-a-uuid")

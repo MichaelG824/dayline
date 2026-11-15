@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { MockQuestion, MockSessionSummary } from '../../lib/api';
+import { GenerateForm } from './GenerateForm';
+import { GeneratedProjectView } from './GeneratedProjectView';
 import { ImportPost } from './ImportPost';
 import { LiveStart } from './LiveStart';
 import { NewGrading } from './NewGrading';
@@ -26,6 +28,8 @@ type View =
   | { kind: 'sessions' }
   | { kind: 'new-grading'; questionId?: string }
   | { kind: 'new-live' }
+  | { kind: 'generate' }
+  | { kind: 'generated'; id: string }
   | { kind: 'workspace'; id: string }
   | { kind: 'session'; id: string }
   | { kind: 'rubrics' };
@@ -38,7 +42,7 @@ const SECTIONS: { id: Section; label: string; home: View }[] = [
 
 function sectionOf(view: View): Section {
   if (view.kind === 'rubrics') return 'rubrics';
-  if (['sessions', 'new-grading', 'new-live', 'workspace', 'session'].includes(view.kind)) {
+  if (['sessions', 'new-grading', 'new-live', 'generate', 'generated', 'workspace', 'session'].includes(view.kind)) {
     return 'practice';
   }
   return 'questions';
@@ -117,6 +121,8 @@ export function MockTab({ day, onTasksChanged }: Props) {
           onOpen={openSession}
           onNewLive={() => setView({ kind: 'new-live' })}
           onNewGrading={() => setView({ kind: 'new-grading' })}
+          onGenerate={() => setView({ kind: 'generate' })}
+          onOpenGenerated={(id) => setView({ kind: 'generated', id })}
         />
       )}
       {view.kind === 'new-grading' && (
@@ -129,6 +135,21 @@ export function MockTab({ day, onTasksChanged }: Props) {
       {view.kind === 'new-live' && (
         <LiveStart
           onCancel={() => setView({ kind: 'sessions' })}
+          onStarted={(id) => setView({ kind: 'workspace', id })}
+        />
+      )}
+      {view.kind === 'generate' && (
+        <GenerateForm
+          onCancel={() => setView({ kind: 'sessions' })}
+          onCreated={(id) => setView({ kind: 'generated', id })}
+        />
+      )}
+      {view.kind === 'generated' && (
+        <GeneratedProjectView
+          key={view.id}
+          projectId={view.id}
+          onBack={() => setView({ kind: 'sessions' })}
+          onOpenProject={(id) => setView({ kind: 'generated', id })}
           onStarted={(id) => setView({ kind: 'workspace', id })}
         />
       )}

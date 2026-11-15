@@ -81,6 +81,17 @@ Model: `MOCK_ASSISTANT_MODEL`, default `claude-sonnet-4-5` on purpose (the capta
 - The in-session assistant reads the dev servers' logs (`get_server_logs`) through `mock_preview.server_logs_reader`; it is offered only when the pack runs servers. In the Workspace the assistant and the preview share the right side: both open on 2xl screens, otherwise the one opened last.
 - Per-pack `ignore` keeps build output and databases (`.next`, Rails `tmp`/`log`/`storage`) out of the file tree and snapshots; per-pack `memory` raises the sandbox limit (next-nest: 1.5 GiB). VM sizing for these packs is in `deploy/sandbox-vm/README.md`.
 
+## Generated full-stack rounds (Mock tab)
+
+The candidate describes a round (plus optional text context files) and Dayline generates a Rails or Next.js + NestJS project, validates it in a real sandbox, and lets them preview it before starting an AI-assisted staged round in it (stage 1 = the task, stage 2 = the change request).
+
+- `mock/project_spec.py` (inputs, the `Artifact`, the rules code enforces), `mock/project_gen.py` (the model writes on top of the `notes-board-*` template scaffold via `submit_project`, then fixes via `revise_project`; at most `MAX_REPAIRS` repairs), `mock/project_check.py` (deps, boot + preview, visible tests, each stage's hidden tests fail before and pass after its reference). Nothing unvalidated is ever handed over. Model: `MOCK_GENERATOR_MODEL` (default `claude-sonnet-5-5`).
+- Projects live in `mock_generated_projects` (migration 015), per owner (the signed-in email). A round started from one is an ordinary staged session whose `staged_problem_id` is the project id, so always resolve problems through `api/services/staged_problems.find_problem`, never `builtin_staged_problems()` directly.
+- Generated stages match JUnit cases by the `(classname, name)` pairs validation recorded (`Stage.cases`): Vitest and Minitest classnames are not pytest module names.
+- Generation runs in a worker thread (`api/services/mock_generate.py`) and keeps its state on the row (progress, attempt log, token usage). The client follows it with a long poll, which also keeps a scale-to-zero host's CPU allocated; a row untouched for `STALE_AFTER` reads as failed. One generation per user at a time.
+- Validation and preview sandboxes count against the runner's `SANDBOX_MAX_RUNNING`; starting a round destroys the project's preview sandbox (`gen-<id>`) first.
+- Docker tests: `RUN_DOCKER_TESTS=1 uv run pytest tests/test_project_gen_docker.py` (fixture projects in `tests/generated_projects/`); add `RUN_MODEL_TESTS=1` for the real-model `tests/test_project_gen_model.py`.
+
 ## Auth and production host
 
 Google sign-in is the ownership proof; `ALLOWED_EMAIL` is the only account that may use the app (`api/auth.py`). If it is unset, nobody is allowlisted.

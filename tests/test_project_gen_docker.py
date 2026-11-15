@@ -11,19 +11,14 @@ Opt in with ``RUN_DOCKER_TESTS=1``. The first run builds the pack images.
 from __future__ import annotations
 
 import os
-import socket
-import threading
-import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 docker = pytest.importorskip("docker")
-uvicorn = pytest.importorskip("uvicorn")
 
 from dayline.adapters.sandbox import RunnerSandboxClient  # noqa: E402
 from dayline.mock import staged  # noqa: E402
@@ -38,11 +33,8 @@ from dayline.mock.project_spec import (  # noqa: E402
 )
 from dayline.mock.templates import builtin_templates  # noqa: E402
 from dayline.models import StageStatus  # noqa: E402
-from dayline_runner.app import create_app  # noqa: E402
-from dayline_runner.config import Settings  # noqa: E402
-from dayline_runner.manager import SandboxManager  # noqa: E402
-from dayline_runner.packs import load_packs  # noqa: E402
 from tests.generated_projects import next_nest_tags, rails_tags  # noqa: E402
+from tests.runner_harness import running_runner  # noqa: E402
 
 pytestmark = [
     pytest.mark.docker,
@@ -51,39 +43,13 @@ pytestmark = [
     ),
 ]
 
-PACKS_DIR = Path(__file__).resolve().parents[1] / "sandbox" / "packs"
-SECRET = "g" * 40
 FIXTURES = {"next-nest": next_nest_tags, "rails": rails_tags}
 
 
 @pytest.fixture(scope="module")
 def runner() -> Iterator[RunnerSandboxClient]:
-    settings = Settings(secret=SECRET, idle_timeout_s=900, hard_cap_s=1800, max_running=2)
-    manager = SandboxManager(docker.from_env(), settings, load_packs(PACKS_DIR))
-    manager.build_packs()
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(
-            create_app(manager=manager, settings=settings),
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-        )
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    while not server.started:
-        time.sleep(0.05)
-    yield RunnerSandboxClient(f"http://127.0.0.1:{port}", SECRET)
-    server.should_exit = True
-    thread.join(timeout=10)
-    for container in manager._client.containers.list(
-        all=True, filters={"label": "dayline.sandbox"}
-    ):
-        if container.labels.get("dayline.sandbox.id", "").startswith(("gentest-", "genround-")):
-            manager.destroy(container.labels["dayline.sandbox.id"])
+    with running_runner(("gentest-", "genround-")) as client:
+        yield client
 
 
 def _artifact(stack: str, change: dict[str, Any] | None = None) -> Artifact:

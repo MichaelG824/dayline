@@ -4,15 +4,18 @@ import { useEffect, useState } from 'react';
 import { MockSessionSummary, getMockSessions } from '../../lib/api';
 import { MAX_SCORE, scoreText } from '../../lib/mock';
 import { formatShortDate } from '../../lib/problems';
-import { CARD, ErrorText, Pill, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { GeneratedList } from './GeneratedList';
+import { CARD, ErrorText, Pill, PRIMARY_BUTTON, SECONDARY_BUTTON, SECTION_TITLE } from './ui';
 
 interface Props {
   onOpen: (session: MockSessionSummary) => void;
   onNewLive: () => void;
   onNewGrading: () => void;
+  onGenerate: () => void;
+  onOpenGenerated: (projectId: string) => void;
 }
 
-export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
+export function SessionList({ onOpen, onNewLive, onNewGrading, onGenerate, onOpenGenerated }: Props) {
   const [sessions, setSessions] = useState<MockSessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,13 +38,16 @@ export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
         <div>
           <h2 className="text-lg font-semibold">Practice</h2>
           <p className="text-sm text-zinc-500">
-            Code a staged round or a practice repo in a sandbox, or paste a past mock's transcript. Either way
-            you get scored against your rubric, with evidence.
+            Code a staged round or a practice repo in a sandbox, generate a full-stack round of your own, or
+            paste a past mock's transcript. Either way you get scored against your rubric, with evidence.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button onClick={onNewGrading} className={SECONDARY_BUTTON}>
             Grade a transcript
+          </button>
+          <button onClick={onGenerate} className={SECONDARY_BUTTON}>
+            Generate a round
           </button>
           <button onClick={onNewLive} className={PRIMARY_BUTTON}>
             Start a live session
@@ -65,13 +71,16 @@ export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
         </div>
       )}
 
+      <GeneratedList onOpen={onOpenGenerated} />
+
       {sessions.length === 0 ? (
         <div className={`${CARD} px-4 py-10 text-center text-sm text-zinc-500`}>
-          No sessions yet. Start a live session, or grade the transcript of a past mock to see where you
+          No sessions yet. Start a live session, generate a round, or grade the transcript of a past mock to see where you
           stand.
         </div>
       ) : (
-        <div className="flex flex-col gap-2">
+        <section className="flex flex-col gap-2">
+          <p className={`${SECTION_TITLE} !mb-0`}>SESSIONS</p>
           {sessions.map((s) => (
             <button
               key={s.id}
@@ -101,7 +110,7 @@ export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
               </span>
             </button>
           ))}
-        </div>
+        </section>
       )}
     </div>
   );

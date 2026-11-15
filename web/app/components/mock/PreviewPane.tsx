@@ -1,17 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import {
-  DevServer,
-  DevServerState,
-  PreviewStatus,
-  ServerAction,
-  devServerAction,
-  getPreviewStatus,
-  getServerLogs,
-  notePreviewReloaded,
-  previewUrl,
-} from '../../lib/api';
+import { DevServer, DevServerState, PreviewApi, PreviewStatus, ServerAction, previewUrl } from '../../lib/api';
 
 const STATUS_POLL_MS = 5000;
 const STARTING_POLL_MS = 1500;
@@ -54,18 +44,21 @@ function defaultServer(servers: DevServer[]): string | null {
 }
 
 interface Props {
-  sessionId: string;
-  // The status the workspace already loaded (it decides whether to offer a
+  // Where the dev servers live: a session's sandbox or a generated
+  // project's preview sandbox. Keep it stable (memoise it).
+  api: PreviewApi;
+  // The status the caller already loaded (it decides whether to offer a
   // preview at all); the pane keeps it fresh while open.
   initial: PreviewStatus;
   onStatus: (status: PreviewStatus) => void;
-  onClose: () => void;
+  // Without one there is no close button.
+  onClose?: () => void;
 }
 
 // The running app beside the editor: pick a dev server, see it in a
 // sandboxed iframe, reload it or open it in a tab, restart the server, and
 // read its logs.
-export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
+export function PreviewPane({ api, initial, onStatus, onClose }: Props) {
   const [status, setStatus] = useState<PreviewStatus>(initial);
   const [selected, setSelected] = useState<string | null>(() => defaultServer(initial.servers));
   const [path, setPath] = useState('/');
@@ -96,7 +89,7 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
     const timer = setTimeout(
       async () => {
         try {
-          const next = await getPreviewStatus(sessionId);
+          const next = await api.status();
           if (!cancelled) apply(next);
         } catch {
           // The workspace notices a stopped sandbox itself.
@@ -108,7 +101,7 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [sessionId, status, anyStarting, apply]);
+  }, [api, status, anyStarting, apply]);
 
   // A server that just became ready replaces whatever the frame showed.
   const lastState = useRef<DevServerState | null>(server?.state ?? null);
@@ -124,7 +117,7 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const chunk = await getServerLogs(sessionId, selected, logCursor.current);
+        const chunk = await api.logs(selected, logCursor.current);
         if (cancelled) return;
         logCursor.current = chunk.next;
         if (chunk.lines.length || chunk.truncated) {
@@ -142,7 +135,7 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [sessionId, selected, logsOpen]);
+  }, [api, selected, logsOpen]);
 
   useEffect(() => {
     logCursor.current = 0;
@@ -159,7 +152,7 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
     setBusy(action);
     setError(null);
     try {
-      apply(await devServerAction(sessionId, server.name, action));
+      apply(await api.action(server.name, action));
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not ${action} ${server.name}.`);
     } finally {
@@ -170,7 +163,7 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
   function reload() {
     if (!server) return;
     setFrameKey((k) => k + 1);
-    void notePreviewReloaded(sessionId, server.name);
+    api.reloaded?.(server.name);
   }
 
   function navigate(event: FormEvent) {
@@ -214,11 +207,13 @@ export function PreviewPane({ sessionId, initial, onStatus, onClose }: Props) {
             </button>
           ))}
         </div>
-        <button onClick={onClose} className={`ml-auto ${ICON_BUTTON}`} aria-label="Close the preview" title="Close">
-          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-            <path d="M4 4l8 8M12 4l-8 8" />
-          </svg>
-        </button>
+        {onClose && (
+          <button onClick={onClose} className={`ml-auto ${ICON_BUTTON}`} aria-label="Close the preview" title="Close">
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+              <path d="M4 4l8 8M12 4l-8 8" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <form onSubmit={navigate} className="flex items-center gap-1 h-10 shrink-0 px-2 border-b border-zinc-200 dark:border-zinc-800">

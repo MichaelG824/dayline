@@ -12,6 +12,7 @@ talks to a third-party client.
 from __future__ import annotations
 
 import copy
+import uuid
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -95,6 +96,15 @@ class InMemoryGeneratedProjectSource:
 TABLE = "mock_generated_projects"
 
 
+def _uuid(project_id: str) -> str:
+    """The id as the uuid column takes it; anything else cannot be a row
+    (and would make Postgres refuse the query), so it reads as absent."""
+    try:
+        return str(uuid.UUID(project_id))
+    except ValueError as exc:
+        raise KeyError(project_id) from exc
+
+
 def _parse_dt(value: Any) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
@@ -158,15 +168,21 @@ class SupabaseGeneratedProjectSource:
         return [_from_row(row) for row in resp.data]
 
     def get(self, owner: str, project_id: str) -> GeneratedProject:
+        row_id = _uuid(project_id)
         resp = (
-            self._client.table(TABLE).select("*").eq("id", project_id).eq("owner", owner).execute()
+            self._client.table(TABLE)
+            .select("*")
+            .eq("id", row_id)
+            .eq("owner", owner)
+            .execute()
         )
         if not resp.data:
             raise KeyError(project_id)
         return _from_row(resp.data[0])
 
     def get_any(self, project_id: str) -> GeneratedProject:
-        resp = self._client.table(TABLE).select("*").eq("id", project_id).execute()
+        row_id = _uuid(project_id)
+        resp = self._client.table(TABLE).select("*").eq("id", row_id).execute()
         if not resp.data:
             raise KeyError(project_id)
         return _from_row(resp.data[0])
@@ -190,4 +206,8 @@ class SupabaseGeneratedProjectSource:
         return _from_row(resp.data[0])
 
     def delete(self, owner: str, project_id: str) -> None:
-        self._client.table(TABLE).delete().eq("id", project_id).eq("owner", owner).execute()
+        try:
+            row_id = _uuid(project_id)
+        except KeyError:
+            return
+        self._client.table(TABLE).delete().eq("id", row_id).eq("owner", owner).execute()

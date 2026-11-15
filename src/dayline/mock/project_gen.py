@@ -596,7 +596,7 @@ class ProjectWriter:
                     chars += len(getattr(delta, "partial_json", "") or getattr(delta, "text", ""))
                     if chars - last >= _STREAM_STEP_CHARS:
                         last = chars
-                        self.writing(f"{chars // 1000}k characters written")
+                        self.writing(f"Writing the files ({chars // 1000}k characters so far)")
             final = stream.get_final_message()
         self.usage.add(getattr(final, "usage", None))
         return final
@@ -715,7 +715,12 @@ def generate(
     for attempt in range(MAX_REPAIRS + 1):
         if hooks.cancelled():
             raise Cancelled
-        writing("Writing the project" if attempt == 0 else "Revising the project")
+        plural = "" if len(problems) == 1 else "s"
+        writing(
+            "Planning the app, the task and the change request"
+            if attempt == 0
+            else f"Fixing {len(problems)} problem{plural} from the last check"
+        )
         try:
             artifact = writer.next(problems)
         except InvalidOutput as exc:
@@ -753,6 +758,6 @@ def _checking(progress: Progress, attempt: int, phase: str, detail: str) -> None
 
 
 def _short(problems: list[str]) -> str:
-    first = [p.splitlines()[0] for p in problems[:3]]
+    first = [p.splitlines()[0].rstrip(":").rstrip() for p in problems[:3]]
     more = f" (and {len(problems) - 3} more)" if len(problems) > 3 else ""
     return "; ".join(first) + more
