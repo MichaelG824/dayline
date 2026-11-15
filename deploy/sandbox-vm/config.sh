@@ -19,7 +19,7 @@ NAT="${NAT:-dayline-sandbox-nat}"
 
 VM="${VM:-dayline-runner}"
 VM_TAG="${VM_TAG:-dayline-runner}"
-VM_MACHINE_TYPE="${VM_MACHINE_TYPE:-e2-small}"
+VM_MACHINE_TYPE="${VM_MACHINE_TYPE:-e2-medium}"
 VM_DISK_GB="${VM_DISK_GB:-20}"
 VM_IP_NAME="${VM_IP_NAME:-dayline-runner-ip}"
 VM_IP="${VM_IP:-10.90.0.10}"

@@ -22,12 +22,12 @@ All names live in `config.sh` and can be overridden from the environment.
 | Firewall | `dayline-sandbox-allow-iap-ssh` | `tcp:22` from IAP (`35.235.240.0/20`) only. |
 | Cloud Router + NAT | `dayline-sandbox-router`, `dayline-sandbox-nat` | Outbound only, for the VM subnet, so pack builds can pull images and packages. |
 | Internal address | `dayline-runner-ip` = `10.90.0.10` | So `SANDBOX_RUNNER_URL` never changes. |
-| VM | `dayline-runner` (e2-small, Debian 13, 20 GB pd-standard, `us-west1-b`) | No external IP, no service account, OS Login, Shielded VM. |
+| VM | `dayline-runner` (e2-medium, Debian 13, 20 GB pd-standard, `us-west1-b`) | No external IP, no service account, OS Login, Shielded VM. |
 | Secret | `dayline-sandbox-runner-secret` | The shared runner secret; readable only by the Cloud Run runtime account. |
 
 Cloud Run gets Direct VPC egress into `dayline-run-egress` with `--vpc-egress=private-ranges-only` (Supabase, Anthropic and Google traffic still go out the normal way), `SANDBOX_RUNNER_URL=http://10.90.0.10:8100`, and `SANDBOX_RUNNER_SECRET` from the secret above.
 
-Rough monthly cost: e2-small about $12.25, disk $0.80, Cloud NAT about $1 plus $0.045/GB, Secret Manager a few cents - about $14.
+Rough monthly cost: e2-medium about $24.50, disk $0.80, Cloud NAT about $1 plus $0.045/GB, Secret Manager a few cents - about $26.
 
 ## Security posture
 
