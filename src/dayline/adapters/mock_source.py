@@ -21,6 +21,7 @@ from dayline.models import (
     Category,
     CriterionScore,
     Evidence,
+    InterviewerStyle,
     MockEvent,
     MockEventKind,
     MockGuideline,
@@ -413,6 +414,9 @@ def _row_to_session(row: dict[str, Any]) -> MockSession:
         test_report=row.get("test_report"),
         staged_problem_id=row.get("staged_problem_id"),
         stages=[_json_to_stage(s) for s in row.get("stages") or []],
+        interviewer_style=(
+            InterviewerStyle(row["interviewer_style"]) if row.get("interviewer_style") else None
+        ),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
     )
@@ -447,6 +451,9 @@ def _session_to_row(session: MockSession) -> dict[str, Any]:
             "staged_problem_id": session.staged_problem_id,
             "stages": [_stage_to_json(s) for s in session.stages],
         }
+    # And only rounds with an interviewer style write the migration-016 column.
+    if session.interviewer_style:
+        row["interviewer_style"] = session.interviewer_style.value
     return row
 
 

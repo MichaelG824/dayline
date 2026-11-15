@@ -407,6 +407,16 @@ class StageStatus(StrEnum):
     FAILED = "failed"  # The round ended while this stage was still active.
 
 
+class InterviewerStyle(StrEnum):
+    """How the interviewer in a staged round talks (``mock/interviewer.py``)."""
+
+    # Like a real interviewer: quiet while you code, no praise, never confirms
+    # correctness, hints only when you are clearly stuck, feedback at the end.
+    REALISTIC = "realistic"
+    # A practice coach: probes each stage and asks follow-ups on request.
+    COACH = "coach"
+
+
 @dataclass(slots=True)
 class StageAttempt:
     """How one stage of a staged round went (see ``mock/staged.py``). Stored
@@ -455,6 +465,8 @@ class MockSession:
     # or a generated project's id (GeneratedProject.id).
     staged_problem_id: str | None = None
     stages: list[StageAttempt] = field(default_factory=list)
+    # A staged round's interviewer; ``None`` (rounds from before styles) is coach.
+    interviewer_style: InterviewerStyle | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -469,6 +481,10 @@ class MockEventKind(StrEnum):
     STAGE_TESTS_RUN = "stage_tests_run"  # {"stage", "status", "passed", "failed", "errors"}
     STAGE_PASSED = "stage_passed"  # {"stage"}
     STAGE_SKIPPED = "stage_skipped"  # {"stage"}
+    # A timed stage (a generated round's change request) arrived: {"stage",
+    # "early": the candidate asked for it before its time}. Recorded at the
+    # moment it unlocked, even when the server noticed later.
+    STAGE_UNLOCKED = "stage_unlocked"
     # The interviewer chat: {"stage", "text"}, plus "trigger" for the interviewer.
     INTERVIEWER_MESSAGE = "interviewer_message"
     CANDIDATE_MESSAGE = "candidate_message"
