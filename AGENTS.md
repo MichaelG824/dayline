@@ -78,6 +78,7 @@ Model: `MOCK_ASSISTANT_MODEL`, default `claude-sonnet-4-5` on purpose (the capta
 - `[dependencies]` is the allowed list, checked both ways against the pack's lockfile at load. Generated projects must pass `deps.project_problems` (runner `POST /packs/{name}/check`, adapter `check_dependencies`); `create` refuses projects that do not.
 - Editor saves are copied into place by a process inside the sandbox (`manager.write_file`), so dev-server file watchers fire under gVisor as well as runc.
 - Pins with reasons: `@swc/core` 1.16.2 (later releases unpack a native addon into a writable, executable folder), TypeScript 6 (swc-node cannot load TS 7), Next needs `turbopack: { root: '/' }` (dependencies live in the image), and Minitest 6 no longer autoloads plugins, so the Rails test commands preload `lib/dayline_junit.rb`.
+- The in-session assistant reads the dev servers' logs (`get_server_logs`) through `mock_preview.server_logs_reader`; it is offered only when the pack runs servers. In the Workspace the assistant and the preview share the right side: both open on 2xl screens, otherwise the one opened last.
 - Per-pack `ignore` keeps build output and databases (`.next`, Rails `tmp`/`log`/`storage`) out of the file tree and snapshots; per-pack `memory` raises the sandbox limit (next-nest: 1.5 GiB). VM sizing for these packs is in `deploy/sandbox-vm/README.md`.
 
 ## Auth and production host
