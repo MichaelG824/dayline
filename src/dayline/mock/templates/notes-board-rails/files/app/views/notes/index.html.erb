@@ -1,0 +1,15 @@
+<h1>Notes board</h1>
+
+<%= form_with model: @note do |form| %>
+  <%= form.text_field :text, placeholder: "Write a note", "aria-label": "New note" %>
+  <%= form.submit "Add" %>
+<% end %>
+<% @note.errors.full_messages.each do |message| %>
+  <p class="error"><%= message %></p>
+<% end %>
+
+<ul>
+  <% @notes.each do |note| %>
+    <li><%= note.text %></li>
+  <% end %>
+</ul>

@@ -8,8 +8,13 @@ import { javascript } from '@codemirror/lang-javascript';
 import { java } from '@codemirror/lang-java';
 import { cpp } from '@codemirror/lang-cpp';
 import { go } from '@codemirror/lang-go';
+import { css } from '@codemirror/lang-css';
+import { html } from '@codemirror/lang-html';
 import { rust } from '@codemirror/lang-rust';
 import { sql } from '@codemirror/lang-sql';
+import { yaml } from '@codemirror/lang-yaml';
+import { StreamLanguage } from '@codemirror/language';
+import { ruby } from '@codemirror/legacy-modes/mode/ruby';
 import { useIsDark } from '../../lib/useIsDark';
 
 // Map a language id (see LANGUAGES in lib/problems.ts) to its grammar.
@@ -31,6 +36,14 @@ export function languageExtensions(language: string): Extension[] {
       return [rust()];
     case 'sql':
       return [sql()];
+    case 'ruby':
+      return [StreamLanguage.define(ruby)];
+    case 'html':
+      return [html()];
+    case 'css':
+      return [css()];
+    case 'yaml':
+      return [yaml()];
     default:
       return [];
   }

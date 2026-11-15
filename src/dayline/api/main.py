@@ -16,9 +16,9 @@ never written to a real calendar (deliberate: tasks are Dayline's own scheduling
 detail). A real Google Calendar is wired in for interviews only - see the
 ``/api/calendar/*`` endpoints.
 
-Every ``/api/*`` route except ``/api/health`` and ``/api/auth/*`` requires a
-Google-proven session whose email matches ``ALLOWED_EMAIL``. See
-``api/auth.py``.
+Every ``/api/*`` route except ``/api/health``, ``/api/auth/*`` and the live
+preview (``/api/preview/*``, token-authenticated) requires a Google-proven
+session whose email matches ``ALLOWED_EMAIL``. See ``api/auth.py``.
 
 Run it with::
 
@@ -33,9 +33,8 @@ are required for sign-in.
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-from dayline.api.auth import AuthGateMiddleware, cors_origins
+from dayline.api.auth import AppCORSMiddleware, AuthGateMiddleware, cors_origins
 from dayline.api.controllers import (
     applications,
     auth,
@@ -47,6 +46,7 @@ from dayline.api.controllers import (
     mock,
     mock_assistant,
     mock_live,
+    mock_preview,
     mock_staged,
     outcomes,
     plan,
@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
     # so the browser sends the session cookie on cross-origin local fetches.
     app.add_middleware(AuthGateMiddleware)
     app.add_middleware(
-        CORSMiddleware,
+        AppCORSMiddleware,
         allow_origins=cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
         problems,
         mock,
         mock_live,
+        mock_preview,
         mock_staged,
         mock_assistant,
     ):

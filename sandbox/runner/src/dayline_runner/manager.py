@@ -14,11 +14,17 @@ Lifecycle:
 - Stopped sandboxes are deleted after ``retain_s``.
 - Docker labels are the source of truth, so a restarted runner adopts the
   sandboxes that already exist instead of losing track of them.
+
+A pack can declare dev servers (``servers.py``): they start when the
+sandbox does (and when it resumes), and the preview proxy (``preview.py``)
+reaches them through exec tunnels (``tunnel.py``), so the no-network rule
+holds for them too.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hmac
 import io
 import logging
 import re
@@ -41,12 +47,15 @@ from dayline_runner.commands import (
     BASHRC,
     BASHRC_PATH,
     COMMAND_LOG_PATH,
+    DAYLINE_DIR,
     CommandRun,
     parse_command_log,
 )
 from dayline_runner.config import Settings
+from dayline_runner.deps import project_problems
 from dayline_runner.junit import TestReport, build_report, parse_junit
-from dayline_runner.packs import HIDDEN_TESTS_DIR, JUNIT_PATH, Pack
+from dayline_runner.packs import HIDDEN_TESTS_DIR, JUNIT_PATH, Pack, ServerSpec
+from dayline_runner.servers import DevServers
 from dayline_runner.workspace import (
     IGNORED_DIRS,
     MAX_FILE_BYTES,
@@ -66,6 +75,8 @@ LABEL = "dayline.sandbox"
 LABEL_ID = "dayline.sandbox.id"
 LABEL_PACK = "dayline.sandbox.pack"
 LABEL_CREATED = "dayline.sandbox.created"
+# The path the preview serves the sandbox's servers under (see preview.py).
+LABEL_PREVIEW_BASE = "dayline.sandbox.preview-base"
 NAME_PREFIX = "dayline-sbx-"
 SANDBOX_USER = "1000:1000"
 BASE_ENV = {
@@ -82,6 +93,7 @@ REAP_INTERVAL_S = 30
 # `timeout` exits 124 when the limit is hit, 137 when it had to SIGKILL.
 _TIMEOUT_EXIT_CODES = (124, 137)
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+_PREVIEW_BASE = re.compile(r"^(/[A-Za-z0-9_-]{1,64}){1,6}$")
 
 PackState = Literal["pending", "building", "ready", "failed"]
 
@@ -161,6 +173,14 @@ class SandboxManager:
             name: ("pending", None) for name in packs
         }
         self._stop = threading.Event()
+        self.servers = DevServers(
+            client.api,
+            self._exec,
+            exec_env=BASE_ENV,
+            user=SANDBOX_USER,
+            workdir=WORKSPACE,
+            clock=clock,
+        )
 
     # -- background work ---------------------------------------------------
 
@@ -211,6 +231,7 @@ class SandboxManager:
                 idle = now - self._last_active.setdefault(sandbox_id, now)
                 if age > s.hard_cap_s or idle > s.idle_timeout_s:
                     log.info("Stopping sandbox %s (age %ds, idle %ds)", sandbox_id, age, idle)
+                    self.servers.forget(sandbox_id, "The sandbox stopped (idle or out of time)")
                     container.stop(timeout=5)
             elif age > s.retain_s:
                 log.info("Deleting sandbox %s", sandbox_id)
@@ -233,9 +254,18 @@ class SandboxManager:
                 "editorLanguage": p.editor_language,
                 "state": self._pack_state[p.name][0],
                 "error": self._pack_state[p.name][1],
+                "servers": [spec.to_json() for spec in p.servers],
+                "dependencies": p.dependencies.to_json() if p.dependencies else None,
             }
             for p in self._packs.values()
         ]
+
+    def dependency_problems(self, pack_name: str, files: dict[str, str]) -> list[str]:
+        """Why ``files`` use dependencies the pack does not have (empty = fine)."""
+        pack = self._packs.get(pack_name)
+        if pack is None:
+            raise SandboxError(f"Unknown language pack {pack_name!r}")
+        return project_problems(pack.dependencies, files) if pack.dependencies else []
 
     def _ready_pack(self, name: str) -> Pack:
         pack = self._packs.get(name)
@@ -280,6 +310,7 @@ class SandboxManager:
             "createdAt": created,
             "expiresAt": created + self._settings.hard_cap_s,
             "idleTimeoutS": self._settings.idle_timeout_s,
+            "previewBase": container.labels.get(LABEL_PREVIEW_BASE),
         }
 
     def info(self, sandbox_id: str) -> dict[str, Any]:
@@ -287,14 +318,29 @@ class SandboxManager:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def create(self, sandbox_id: str, pack_name: str, files: dict[str, str]) -> dict[str, Any]:
+    def create(
+        self,
+        sandbox_id: str,
+        pack_name: str,
+        files: dict[str, str],
+        preview_base: str | None = None,
+    ) -> dict[str, Any]:
+        """Start a sandbox with ``files``. ``preview_base`` is the path its dev
+        servers are previewed under (it holds the caller's unguessable token);
+        without one they are served from ``/``."""
         _validate_id(sandbox_id)
         pack = self._ready_pack(pack_name)
         if len(files) > MAX_FILES:
             raise SandboxError(f"At most {MAX_FILES} files")
-        encoded = {clean_path(path): content.encode() for path, content in files.items()}
+        encoded = {
+            clean_path(path, pack.ignore): content.encode() for path, content in files.items()
+        }
         if any(len(content) > MAX_FILE_BYTES for content in encoded.values()):
             raise SandboxError(f"Files must be under {MAX_FILE_BYTES // 1024} KB")
+        if preview_base is not None and not _PREVIEW_BASE.match(preview_base):
+            raise SandboxError("Invalid preview base")
+        if problems := self.dependency_problems(pack.name, files):
+            raise SandboxError("Dependencies the sandbox does not have: " + "; ".join(problems))
 
         name = NAME_PREFIX + sandbox_id
         s = self._settings
@@ -312,6 +358,8 @@ class SandboxManager:
                 LABEL_PACK: pack.name,
                 LABEL_CREATED: str(int(self._clock())),
             }
+            if preview_base:
+                labels[LABEL_PREVIEW_BASE] = preview_base
             self._client.volumes.create(name=name, labels=labels)
             try:
                 container = self._client.containers.run(
@@ -332,20 +380,23 @@ class SandboxManager:
                     cap_drop=["ALL"],
                     security_opt=["no-new-privileges"],
                     nano_cpus=int(s.cpus * 1e9),
-                    mem_limit=s.memory,
-                    memswap_limit=s.memory,
+                    mem_limit=pack.memory or s.memory,
+                    memswap_limit=pack.memory or s.memory,
                     pids_limit=s.pids_limit,
                     runtime=s.runtime,
                 )
                 # The rc file goes in alongside the template (see commands.py).
                 setup = {BASHRC_PATH: BASHRC.encode(), COMMAND_LOG_PATH: b""}
-                container.put_archive(WORKSPACE, file_tar({**encoded, **setup}))
+                container.put_archive(
+                    WORKSPACE, file_tar({**encoded, **setup}, pack.is_executable)
+                )
             except Exception:
                 self._remove_by_name(name)
                 raise
             self.touch(sandbox_id)
             container.reload()
-            return self._info(container)
+        self._autostart(container, pack)
+        return self._info(container)
 
     def resume(self, sandbox_id: str) -> dict[str, Any]:
         with self._lock:
@@ -358,6 +409,7 @@ class SandboxManager:
                     raise SandboxBusy("Too many sandboxes are running. End one first.")
                 container.start()
                 container.reload()
+                self._autostart(container, self._pack_of(container))
             self.touch(sandbox_id)
             return self._info(container)
 
@@ -373,7 +425,9 @@ class SandboxManager:
         name = container.name
         with contextlib.suppress(DockerNotFound):
             container.remove(force=True)
-        self._last_active.pop(container.labels.get(LABEL_ID, ""), None)
+        sandbox_id = container.labels.get(LABEL_ID, "")
+        self._last_active.pop(sandbox_id, None)
+        self.servers.drop(sandbox_id)
         self._remove_by_name(name)
 
     def _remove_by_name(self, name: str) -> None:
@@ -397,15 +451,16 @@ class SandboxManager:
 
     def list_files(self, sandbox_id: str) -> list[FileEntry]:
         container = self._running(sandbox_id)
+        ignored = self._pack_of(container).ignore
         prune: list[str] = []
-        for name in sorted(IGNORED_DIRS):
+        for name in sorted(IGNORED_DIRS | ignored):
             prune += ["-o", "-name", name] if prune else ["-name", name]
         find = ["find", ".", "(", *prune, ")", "-prune", "-o", "-type", "f"]
         _, stats = self._exec(container, [*find, "-printf", "%s %T@ %P\\0"])
         small = f"-{MAX_FILE_BYTES // 1024 + 1}k"
         hash_cmd = " ".join(shlex.quote(a) for a in [*find, "-size", small, "-print0"])
         _, hashes = self._exec(container, ["sh", "-c", f"{hash_cmd} | xargs -0 -r sha1sum -z"])
-        return parse_listing(stats, hashes)
+        return parse_listing(stats, hashes, ignored)
 
     def _size(self, container: Container, path: str) -> int | None:
         """Size of a regular file, or ``None`` if there is none."""
@@ -425,8 +480,8 @@ class SandboxManager:
         return output[:40].decode() if code == 0 else ""
 
     def read_file(self, sandbox_id: str, path: str) -> dict[str, Any]:
-        path = clean_path(path)
         container = self._running(sandbox_id)
+        path = clean_path(path, self._pack_of(container).ignore)
         size = self._size(container, path)
         if size is None:
             raise SandboxNotFound(f"No file {path!r}")
@@ -446,18 +501,36 @@ class SandboxManager:
         self, sandbox_id: str, path: str, content: str, base_version: str | None
     ) -> dict[str, Any]:
         """Write a file. With ``base_version`` the write only happens if the file
-        is unchanged since that version (``""`` means it must not exist yet)."""
-        path = clean_path(path)
+        is unchanged since that version (``""`` means it must not exist yet).
+
+        The bytes arrive in the ignored ``.dayline`` folder and a process in
+        the sandbox copies them into place, so the write happens inside it:
+        dev-server file watchers (inotify) then see an ordinary in-place
+        save, which under gVisor they would not for a file changed from
+        outside the sandbox."""
         data = content.encode()
         if len(data) > MAX_FILE_BYTES:
             raise SandboxError(f"Files must be under {MAX_FILE_BYTES // 1024} KB")
         container = self._running(sandbox_id)
+        path = clean_path(path, self._pack_of(container).ignore)
         if base_version is not None and self._version(container, path) != base_version:
             raise SandboxConflict(f"{path} changed since it was opened")
+        staged = f"{DAYLINE_DIR}/incoming/{secrets.token_hex(8)}"
+        mode = "755" if self._pack_of(container).is_executable(path) else "644"
         try:
-            container.put_archive(WORKSPACE, file_tar({path: data}))
+            container.put_archive(WORKSPACE, file_tar({staged: data}))
         except APIError as exc:
             raise SandboxError(f"Could not write {path}: {exc.explanation}") from exc
+        # A new file gets the pack's mode; an existing one keeps its own.
+        script = (
+            'mkdir -p -- "$(dirname -- "$2")"'
+            ' && { [ -e "$2" ] || { : > "$2" && chmod "$3" "$2"; }; }'
+            ' && cat -- "$1" > "$2"; code=$?; rm -f -- "$1"; exit $code'
+        )
+        code, output = self._exec(container, ["sh", "-c", script, "sh", staged, f"./{path}", mode])
+        if code != 0:
+            detail = output.decode(errors="replace").strip().splitlines()
+            raise SandboxError(f"Could not write {path}: {detail[-1] if detail else code}")
         return {"path": path, "version": content_version(data)}
 
     def snapshot(self, sandbox_id: str) -> dict[str, Any]:
@@ -465,7 +538,7 @@ class SandboxManager:
         container = self._container(sandbox_id)
         stream, _ = container.get_archive(WORKSPACE)
         try:
-            files, skipped = read_snapshot(stream)
+            files, skipped = read_snapshot(stream, extra=self._pack_of(container).ignore)
         except ValueError as exc:
             raise SandboxError(str(exc)) from exc
         return {"files": files, "skipped": skipped}
@@ -549,6 +622,83 @@ class SandboxManager:
             return self._run_test_cmd(sandbox_id, container, pack, pack.hidden_test_cmd)
         finally:
             self._exec(container, clear)
+
+    # -- dev servers and the preview -----------------------------------------
+
+    def _autostart(self, container: Container, pack: Pack) -> None:
+        sandbox_id = container.labels.get(LABEL_ID, "")
+        for spec in pack.servers:
+            if spec.autostart:
+                self.servers.start(sandbox_id, container, spec, self._server_base(container, spec))
+
+    @staticmethod
+    def _server_base(container: Container, spec: ServerSpec) -> str:
+        """The server's ``$BASE_PATH``: where the preview serves it."""
+        base = container.labels.get(LABEL_PREVIEW_BASE)
+        return f"{base}/{spec.port}" if base and spec.base_path else ""
+
+    def _spec(self, container: Container, name: str) -> ServerSpec:
+        pack = self._pack_of(container)
+        spec = pack.server(name)
+        if spec is None:
+            raise SandboxNotFound(f"The {pack.display_name} pack has no server {name!r}")
+        return spec
+
+    def server_statuses(self, sandbox_id: str) -> list[dict[str, Any]]:
+        """``[{name, port, readyPath, state, exitCode, startedAt, readyAt}]``;
+        every server reads as stopped while the sandbox is."""
+        container = self._container(sandbox_id)
+        if container.status != "running":
+            self.servers.forget(sandbox_id)
+        return self.servers.statuses(sandbox_id, self._pack_of(container))
+
+    def server_action(self, sandbox_id: str, name: str, action: str) -> list[dict[str, Any]]:
+        """``start``, ``stop`` or ``restart`` a server; returns every status."""
+        container = self._running(sandbox_id)
+        spec = self._spec(container, name)
+        if action == "stop":
+            self.servers.stop(sandbox_id, container, spec)
+        elif action in ("start", "restart"):
+            self.servers.start(sandbox_id, container, spec, self._server_base(container, spec))
+        else:
+            raise SandboxError(f"Unknown server action {action!r}")
+        return self.servers.statuses(sandbox_id, self._pack_of(container))
+
+    def server_logs(self, sandbox_id: str, name: str, since: int) -> dict[str, Any]:
+        """``{lines, next, truncated}``: output from line ``since`` on."""
+        container = self._container(sandbox_id)
+        return self.servers.logs(sandbox_id, self._spec(container, name), max(0, since))
+
+    def preview_path(self, sandbox_id: str, port: int, base: str, suffix: str) -> str:
+        """The path to request from the server on ``port`` for the preview URL
+        ``.../{port}{suffix}``, once ``base`` is shown to be the sandbox's
+        preview base. Only the pack's server ports can be previewed."""
+        container = self._running(sandbox_id)
+        expected = container.labels.get(LABEL_PREVIEW_BASE) or ""
+        if not hmac.compare_digest(base.encode(), expected.encode()):
+            raise SandboxNotFound("No such preview")
+        spec = next((s for s in self._pack_of(container).servers if s.port == port), None)
+        if spec is None:
+            raise SandboxNotFound(f"Nothing is previewable on port {port}")
+        return f"{self._server_base(container, spec)}{suffix}" or "/"
+
+    def open_port(self, sandbox_id: str, port: int) -> socket.socket:
+        """A connection to ``port`` inside the sandbox (see tunnel.py): a
+        ``socat`` exec whose stdin/stdout carry the bytes, Docker-framed."""
+        container = self._running(sandbox_id)
+        api = self._client.api
+        exec_id = api.exec_create(
+            container.id,
+            ["socat", "STDIO", f"TCP:127.0.0.1:{port},connect-timeout=5"],
+            stdin=True,
+            user=SANDBOX_USER,
+            workdir=WORKSPACE,
+        )["Id"]
+        raw = api.exec_start(exec_id, socket=True)
+        sock: socket.socket = getattr(raw, "_sock", raw)
+        # The Docker client's read timeout would end a quiet keep-alive connection.
+        sock.settimeout(None)
+        return sock
 
     # -- terminal ------------------------------------------------------------
 

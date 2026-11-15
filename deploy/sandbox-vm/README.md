@@ -40,6 +40,22 @@ Rough monthly cost: e2-small about $12.25, disk $0.80, Cloud NAT about $1 plus $
 - Every runner request carries the shared bearer secret; it is stored root-only in `/etc/dayline-runner/env` and never in the repo or in command lines.
 - `unattended-upgrades` keeps Debian (including Docker and gVisor packages) patched.
 
+## Full-stack packs and previews
+
+The `rails` and `next-nest` packs run dev servers inside the sandbox, and the browser sees them through the preview proxy (`sandbox/runner/src/dayline_runner/preview.py`).
+Preview traffic reaches a dev server through a `docker exec` of `socat` inside the sandbox, so the containers keep `network_mode: none` and nothing new listens on the VM: no firewall change is needed.
+
+Sizing, measured locally under runc with the runner's limits (1 CPU per sandbox), for the built-in templates:
+
+| Pack | Image | Dev servers idle | Peak (servers + a test run) | Sandbox memory limit |
+| --- | --- | --- | --- | --- |
+| `next-nest` | about 1.3 GB | about 490-560 MiB | about 750 MiB | 1.5 GiB (`memory` in its `pack.toml`) |
+| `rails` | about 0.4 GB | about 70-90 MiB | about 160 MiB | 1 GiB (the runner default) |
+
+gVisor adds some memory per sandbox on top of this, and real projects grow (Next's compiler most of all).
+An e2-small (2 GB) cannot hold a `next-nest` session next to the OS, Docker and the runner; e2-medium (4 GB) fits one comfortably and e2-standard-2 (8 GB) fits two (`SANDBOX_MAX_RUNNING` defaults to 2).
+Choose with `VM_MACHINE_TYPE` in `config.sh`; changing an existing VM's machine type means stopping it (`gcloud compute instances set-machine-type`).
+
 ## Set up or update
 
 As a project owner, from anywhere in the repo, with `sandbox/` and this folder committed:

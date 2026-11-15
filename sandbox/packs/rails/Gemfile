@@ -1,0 +1,16 @@
+# Preinstalled in every Rails sandbox. Sandboxes have no network, so projects
+# may only use these gems (pack.toml's [dependencies] is the allowed list).
+source "https://rubygems.org"
+
+gem "rails", "8.1.4.1"
+gem "sqlite3", "2.10.2"
+gem "puma", "8.1.1"
+gem "propshaft"
+gem "importmap-rails"
+gem "turbo-rails"
+gem "stimulus-rails"
+gem "jbuilder"
+gem "bcrypt"
+gem "bootsnap", require: false
+gem "debug", require: "debug/prelude"
+gem "rails-controller-testing"

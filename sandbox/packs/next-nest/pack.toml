@@ -1,0 +1,46 @@
+name = "next-nest"
+display_name = "Next.js + NestJS (Node 22)"
+# A CodeMirror language id (web/app/components/problems/CodeEditor.tsx).
+editor_language = "typescript"
+# The project's own vitest config (web/ and api/ as projects). {junit} is
+# where the runner reads JUnit XML results from.
+test_cmd = "vitest run --reporter=default --reporter=junit --outputFile.junit={junit}"
+test_timeout_s = 120
+# Staged rounds' hidden tests: only the files in {hidden}, with the pack's
+# config (swc for Nest's decorators and TSX; add `// @vitest-environment
+# jsdom` to a React test) instead of the candidate's.
+hidden_test_cmd = "vitest run --config /opt/pack/hidden.vitest.config.mjs --reporter=default --reporter=junit --outputFile.junit={junit} {hidden}"
+# Next's build output and cache stay out of the file tree and snapshots.
+ignore = [".next"]
+# Next dev, Nest and a Vitest run together peaked at about 750 MiB for the
+# small built-in app, so the runner's 1g default leaves no room for a real
+# project: Next's compiler alone grows with the app.
+memory = "1536m"
+
+# Projects are a web/ (Next.js App Router) + api/ (NestJS) monorepo. Every
+# package.json may only name these, at these versions (see the runner's
+# deps.py). Next must set `turbopack: { root: '/' }`: dependencies live in
+# the image, outside the project folder.
+[dependencies]
+manager = "npm"
+allowed = { "@nestjs/common" = "12.5.0", "@nestjs/core" = "12.5.0", "@nestjs/platform-express" = "12.5.0", "@nestjs/testing" = "12.5.0", "@swc-node/register" = "1.12.1", "@swc/core" = "1.16.2", "@testing-library/jest-dom" = "7.0.1", "@testing-library/react" = "16.3.3", "@types/express" = "5.0.6", "@types/node" = "22.20.5", "@types/react" = "19.3.0", "@types/react-dom" = "19.3.0", "@types/supertest" = "7.2.1", class-transformer = "0.5.1", class-validator = "0.15.1", jsdom = "31.0.1", next = "16.4.6", react = "19.3.1", react-dom = "19.3.1", reflect-metadata = "0.2.2", rxjs = "7.8.2", supertest = "7.3.2", typescript = "6.0.3", unplugin-swc = "2.0.0", vitest = "5.1.0" }
+
+# The Nest API. Next forwards the browser's /api/* calls to it, so the
+# preview only needs the web server; it is still previewable on its own,
+# served from "/" (the proxy strips the preview path).
+[[servers]]
+name = "api"
+command = "cd api && exec node --watch --import @swc-node/register/esm-register src/main.ts"
+port = 4000
+ready_timeout_s = 60
+base_path = false
+
+# BASE_PATH is the preview path; next.config sets `basePath` from it.
+[[servers]]
+name = "web"
+command = "cd web && exec next dev --port $PORT --hostname 127.0.0.1"
+port = 3000
+# The app's root (basePath, no trailing slash): the first load compiles the
+# page, so the server only counts as ready once that is done.
+ready_path = ""
+ready_timeout_s = 180

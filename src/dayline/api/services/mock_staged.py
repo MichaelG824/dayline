@@ -24,6 +24,7 @@ from dayline.api.services.mock import check_session_refs
 from dayline.api.services.mock_live import (
     event,
     live_session,
+    new_preview_base,
     runner_errors,
     sandbox_client,
 )
@@ -97,7 +98,9 @@ def start_round(
     )
     try:
         with runner_errors():
-            sandbox.create(session.id, problem.pack, problem.starter)
+            sandbox.create(
+                session.id, problem.pack, problem.starter, new_preview_base(session.id)
+            )
     except HTTPException:
         ctx.mock_source.delete_session(session.id)
         raise

@@ -1,0 +1,8 @@
+source "https://rubygems.org"
+
+gem "rails", "8.1.4.1"
+gem "sqlite3", "2.10.2"
+gem "puma", "8.1.1"
+gem "propshaft"
+gem "bootsnap", require: false
+gem "debug", require: "debug/prelude", groups: %i[development test]

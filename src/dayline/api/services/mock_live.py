@@ -15,6 +15,7 @@ files, terminal, and ending all go through here.
 from __future__ import annotations
 
 import contextlib
+import secrets
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -40,6 +41,15 @@ from dayline.models import (
     MockSessionKind,
     MockSessionStatus,
 )
+
+# Where the browser previews a session's dev servers (services/mock_preview.py).
+PREVIEW_PREFIX = "/api/preview"
+
+
+def new_preview_base(session_id: str) -> str:
+    """A fresh preview base for a new session's sandbox: the path, with an
+    unguessable token, that its dev servers are previewed under."""
+    return f"{PREVIEW_PREFIX}/{session_id}/{secrets.token_urlsafe(24)}"
 
 
 @contextlib.contextmanager
@@ -168,7 +178,9 @@ def start_session(
     )
     try:
         with runner_errors():
-            sandbox.create(session.id, template.pack, template.files)
+            sandbox.create(
+                session.id, template.pack, template.files, new_preview_base(session.id)
+            )
     except HTTPException:
         ctx.mock_source.delete_session(session.id)
         raise

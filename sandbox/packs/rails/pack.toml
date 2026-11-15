@@ -1,0 +1,32 @@
+name = "rails"
+display_name = "Ruby 3.3 + Rails 8.1"
+# A CodeMirror language id (web/app/components/problems/CodeEditor.tsx).
+editor_language = "ruby"
+# Minitest (the Rails default). lib/dayline_junit.rb writes the JUnit XML
+# the runner reads to $DAYLINE_JUNIT, whatever the project's test_helper does.
+test_cmd = "env DAYLINE_JUNIT={junit} ruby -r/opt/pack/lib/dayline_junit.rb bin/rails test"
+test_timeout_s = 120
+# Staged rounds' hidden tests: only the files in {hidden}. They can
+# `require "test_helper"` like any other test.
+hidden_test_cmd = "env DAYLINE_JUNIT={junit} ruby -r/opt/pack/lib/dayline_junit.rb bin/rails test {hidden}"
+# Workspace files are written without modes, so binstubs need restoring.
+executables = ["bin/*"]
+# Logs, caches, pid files and the SQLite databases stay out of the file tree
+# and snapshots (Rails creates these folders as it needs them).
+ignore = ["log", "tmp", "storage"]
+
+# The Gemfile may only name these (see the runner's deps.py); every other gem
+# in Gemfile.lock comes with them. Projects are a standard Rails app whose
+# config.ru mounts the app at BASE_PATH (the preview path).
+[dependencies]
+manager = "bundler"
+allowed = { bcrypt = "3.1.22", bootsnap = "1.26.1", debug = "1.11.1", importmap-rails = "2.2.3", jbuilder = "2.15.1", propshaft = "1.3.2", puma = "8.1.1", rails = "8.1.4.1", rails-controller-testing = "1.0.5", sqlite3 = "2.10.2", stimulus-rails = "1.3.4", turbo-rails = "2.0.23" }
+
+# The PID file lives on the tmpfs so a stopped and resumed sandbox never
+# finds a stale one. RAILS_RELATIVE_URL_ROOT makes asset URLs include the
+# preview path.
+[[servers]]
+name = "web"
+command = "bin/rails db:prepare && RAILS_RELATIVE_URL_ROOT=$BASE_PATH exec bin/rails server --binding 127.0.0.1 --port $PORT --pid /tmp/rails-server.pid"
+port = 3000
+ready_timeout_s = 120

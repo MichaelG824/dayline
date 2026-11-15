@@ -86,6 +86,16 @@ const EXTENSION_LANGUAGES: Record<string, string> = {
   cpp: 'cpp',
   h: 'cpp',
   hpp: 'cpp',
+  rb: 'ruby',
+  rake: 'ruby',
+  ru: 'ruby',
+  gemfile: 'ruby',
+  rakefile: 'ruby',
+  erb: 'html',
+  html: 'html',
+  css: 'css',
+  yml: 'yaml',
+  yaml: 'yaml',
 };
 
 export function languageForPath(path: string): string {

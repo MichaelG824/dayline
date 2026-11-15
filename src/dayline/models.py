@@ -476,6 +476,10 @@ class MockEventKind(StrEnum):
     ASSISTANT_RESPONSE = "assistant_response"
     ASSISTANT_EDIT_PROPOSED = "assistant_edit_proposed"
     ASSISTANT_EDIT_DECIDED = "assistant_edit_decided"
+    # Dev servers and the app preview: {"server", "action": start|stop|restart}
+    # and {"server"} for a reload of the preview pane.
+    SERVER_ACTION = "server_action"
+    PREVIEW_RELOADED = "preview_reloaded"
 
 
 @dataclass(slots=True)

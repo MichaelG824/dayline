@@ -7,6 +7,10 @@ touches Docker: it calls the runner over HTTP (files, tests) and WebSocket
 
 Runner JSON is passed through as plain dicts in camelCase (the runner's wire
 format); the shapes are documented on each method.
+
+A pack can run dev servers in the sandbox; :meth:`SandboxClient.preview`
+and :meth:`SandboxClient.open_preview_socket` reach them through the
+runner's preview proxy, so the browser never talks to the runner itself.
 """
 
 from __future__ import annotations
@@ -16,16 +20,21 @@ import contextlib
 import copy
 import hashlib
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
 import httpx
 import websockets
 
-# Test runs can take the pack's full timeout (60s by default) plus startup.
-_TEST_TIMEOUT_S = 120.0
+# Test runs can take the pack's full timeout (up to 120s) plus startup.
+_TEST_TIMEOUT_S = 180.0
 _DEFAULT_TIMEOUT_S = 30.0
+# A dev server's first page load compiles it; the runner allows 300s.
+_PREVIEW_TIMEOUT = httpx.Timeout(30.0, read=310.0)
+# The runner checks this against the sandbox's preview base (see preview.py there).
+PREVIEW_BASE_HEADER = "X-Dayline-Preview-Base"
 
 
 class SandboxUnavailable(Exception):
@@ -39,6 +48,28 @@ class SandboxRequestError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+@dataclass(slots=True)
+class PreviewResponse:
+    """A dev server's answer through the runner, streamed. ``headers`` keeps
+    repeats (``Set-Cookie``); ``aclose`` must run once the body is done."""
+
+    status: int
+    headers: list[tuple[str, str]]
+    body: AsyncIterator[bytes]
+    aclose: Callable[[], Awaitable[None]]
+
+
+class PreviewSocket(Protocol):
+    """A dev server's WebSocket: ``subprotocol`` is what it accepted."""
+
+    @property
+    def subprotocol(self) -> str | None: ...
+
+    async def send(self, message: bytes | str) -> None: ...
+
+    def __aiter__(self) -> AsyncIterator[bytes | str]: ...
 
 
 class TerminalConnection(Protocol):
@@ -56,14 +87,65 @@ class SandboxClient(Protocol):
         """``[{name, displayName, editorLanguage, state, error}]``."""
         ...
 
-    def create(self, sandbox_id: str, pack: str, files: dict[str, str]) -> dict[str, Any]:
-        """Start a sandbox. Returns its info (see :meth:`info`)."""
+    def create(
+        self, sandbox_id: str, pack: str, files: dict[str, str], preview_base: str | None = None
+    ) -> dict[str, Any]:
+        """Start a sandbox (and its pack's dev servers). ``preview_base`` is
+        the path the browser previews them under. Returns its info."""
         ...
 
     def info(self, sandbox_id: str) -> dict[str, Any]:
-        """``{id, pack, state: running|stopped, createdAt, expiresAt, idleTimeoutS}``
-        (times in epoch seconds)."""
+        """``{id, pack, state: running|stopped, createdAt, expiresAt, idleTimeoutS,
+        previewBase}`` (times in epoch seconds)."""
         ...
+
+    def check_dependencies(self, pack: str, files: dict[str, str]) -> list[str]:
+        """Why ``files`` use dependencies the pack does not install (empty =
+        fine). The pack's allowed list is ``packs()[i]["dependencies"]``."""
+        ...
+
+    def servers(self, sandbox_id: str) -> list[dict[str, Any]]:
+        """The pack's dev servers: ``[{name, port, readyPath, state:
+        stopped|starting|ready|exited, exitCode, startedAt, readyAt}]``."""
+        ...
+
+    def server_action(self, sandbox_id: str, name: str, action: str) -> list[dict[str, Any]]:
+        """``start``, ``stop`` or ``restart`` a dev server; returns :meth:`servers`."""
+        ...
+
+    def server_logs(self, sandbox_id: str, name: str, since: int) -> dict[str, Any]:
+        """``{lines, next, truncated}``: output lines numbered ``since`` on."""
+        ...
+
+    async def preview(
+        self,
+        sandbox_id: str,
+        base: str,
+        port: int,
+        path: str,
+        *,
+        method: str,
+        query: str,
+        headers: list[tuple[str, str]],
+        body: AsyncIterator[bytes] | None,
+    ) -> PreviewResponse:
+        """Forward a request to the dev server on ``port``. ``path`` is the
+        raw, still-encoded part of the URL after the port (``""`` or
+        ``"/..."``); ``base`` must be the sandbox's preview base. Runner
+        refusals come back as responses marked ``X-Dayline-Preview-Error``."""
+        ...
+
+    def open_preview_socket(
+        self,
+        sandbox_id: str,
+        base: str,
+        port: int,
+        path: str,
+        *,
+        query: str,
+        headers: list[tuple[str, str]],
+        subprotocols: list[str],
+    ) -> contextlib.AbstractAsyncContextManager[PreviewSocket]: ...
 
     def resume(self, sandbox_id: str) -> dict[str, Any]: ...
 
@@ -129,6 +211,7 @@ class RunnerSandboxClient:
         self._http = httpx.Client(
             base_url=base_url, headers=self._headers, timeout=_DEFAULT_TIMEOUT_S
         )
+        self._async: httpx.AsyncClient | None = None
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
@@ -151,10 +234,106 @@ class RunnerSandboxClient:
         result: list[dict[str, Any]] = self._request("GET", "/packs")
         return result
 
-    def create(self, sandbox_id: str, pack: str, files: dict[str, str]) -> dict[str, Any]:
-        body = {"id": sandbox_id, "pack": pack, "files": files}
+    def create(
+        self, sandbox_id: str, pack: str, files: dict[str, str], preview_base: str | None = None
+    ) -> dict[str, Any]:
+        body = {"id": sandbox_id, "pack": pack, "files": files, "previewBase": preview_base}
         result: dict[str, Any] = self._request("POST", "/sandboxes", json=body)
         return result
+
+    def check_dependencies(self, pack: str, files: dict[str, str]) -> list[str]:
+        result: dict[str, Any] = self._request(
+            "POST", f"/packs/{quote(pack)}/check", json={"files": files}
+        )
+        return list(result["problems"])
+
+    def servers(self, sandbox_id: str) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = self._request("GET", f"/sandboxes/{sandbox_id}/servers")
+        return result
+
+    def server_action(self, sandbox_id: str, name: str, action: str) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = self._request(
+            "POST", f"/sandboxes/{sandbox_id}/servers/{quote(name)}/{quote(action)}"
+        )
+        return result
+
+    def server_logs(self, sandbox_id: str, name: str, since: int) -> dict[str, Any]:
+        result: dict[str, Any] = self._request(
+            "GET", f"/sandboxes/{sandbox_id}/servers/{quote(name)}/logs", params={"since": since}
+        )
+        return result
+
+    def _preview_url(self, sandbox_id: str, port: int, path: str, query: str) -> str:
+        return f"/sandboxes/{sandbox_id}/preview/{port}{path}" + (f"?{query}" if query else "")
+
+    async def preview(
+        self,
+        sandbox_id: str,
+        base: str,
+        port: int,
+        path: str,
+        *,
+        method: str,
+        query: str,
+        headers: list[tuple[str, str]],
+        body: AsyncIterator[bytes] | None,
+    ) -> PreviewResponse:
+        if self._async is None:
+            self._async = httpx.AsyncClient(
+                base_url=self._base_url, headers=self._headers, timeout=_PREVIEW_TIMEOUT
+            )
+        request = self._async.build_request(
+            method,
+            self._preview_url(sandbox_id, port, path, query),
+            headers=[*headers, (PREVIEW_BASE_HEADER, base)],
+            content=body,
+        )
+        try:
+            response = await self._async.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            raise SandboxUnavailable(f"The sandbox runner is not reachable ({exc})") from exc
+        return PreviewResponse(
+            status=response.status_code,
+            headers=response.headers.multi_items(),
+            body=response.aiter_raw(),
+            aclose=response.aclose,
+        )
+
+    @contextlib.asynccontextmanager
+    async def open_preview_socket(
+        self,
+        sandbox_id: str,
+        base: str,
+        port: int,
+        path: str,
+        *,
+        query: str,
+        headers: list[tuple[str, str]],
+        subprotocols: list[str],
+    ) -> AsyncIterator[PreviewSocket]:
+        ws_base = "ws" + self._base_url.removeprefix("http")
+        url = ws_base + self._preview_url(sandbox_id, port, path, query)
+        try:
+            connection = await websockets.connect(
+                url,
+                additional_headers=[
+                    *headers,
+                    *self._headers.items(),
+                    (PREVIEW_BASE_HEADER, base),
+                ],
+                subprotocols=[websockets.Subprotocol(p) for p in subprotocols] or None,
+                max_size=16 * 2**20,
+                # The browser's own pings keep the socket open.
+                ping_interval=None,
+            )
+        except websockets.InvalidStatus as exc:
+            raise SandboxRequestError(exc.response.status_code, "Preview socket refused") from exc
+        except (OSError, websockets.WebSocketException) as exc:
+            raise SandboxUnavailable(f"The sandbox runner is not reachable ({exc})") from exc
+        try:
+            yield connection
+        finally:
+            await connection.close()
 
     def info(self, sandbox_id: str) -> dict[str, Any]:
         result: dict[str, Any] = self._request("GET", f"/sandboxes/{sandbox_id}")
@@ -265,16 +444,39 @@ class _EchoTerminal:
             yield item
 
 
+class _EchoSocket(_EchoTerminal):
+    def __init__(self, subprotocol: str | None) -> None:
+        super().__init__()
+        self.subprotocol = subprotocol
+
+    async def send(self, message: bytes | str) -> None:
+        self.received.append(message)
+        await self._queue.put(None if message == "close" else message)
+
+
 class InMemorySandboxClient:
     """A working fake :class:`SandboxClient` for tests: files live in a dict,
     test runs return ``next_report`` (set it to script a run), hidden test
     runs return ``hidden_report(files)`` (replace it to script them; each
-    run's files are kept in ``hidden_runs``), and the terminal echoes."""
+    run's files are kept in ``hidden_runs``), and the terminal echoes.
+
+    Packs with dev servers (``SERVERS``) report them ready once started;
+    previews answer with ``preview_reply(request)`` (each request is kept in
+    ``preview_requests``) and preview sockets echo until sent ``"close"``."""
 
     PACKS = [
         {"name": "python", "displayName": "Python 3.12", "editorLanguage": "python"},
         {"name": "typescript", "displayName": "TypeScript", "editorLanguage": "typescript"},
+        {"name": "next-nest", "displayName": "Next.js + NestJS", "editorLanguage": "typescript"},
+        {"name": "rails", "displayName": "Ruby 3.3 + Rails 8.1", "editorLanguage": "ruby"},
     ]
+    SERVERS = {
+        "next-nest": [
+            {"name": "api", "port": 4000, "readyPath": None},
+            {"name": "web", "port": 3000, "readyPath": ""},
+        ],
+        "rails": [{"name": "web", "port": 3000, "readyPath": None}],
+    }
 
     def __init__(self) -> None:
         self.sandboxes: dict[str, dict[str, Any]] = {}
@@ -287,6 +489,11 @@ class InMemorySandboxClient:
         }
         self.terminals: list[_EchoTerminal] = []
         self.unavailable = False
+        self.preview_requests: list[dict[str, Any]] = []
+        self.preview_reply: Callable[[dict[str, Any]], tuple[int, list[tuple[str, str]], bytes]] = (
+            lambda _request: (200, [("content-type", "text/html")], b"<h1>Notes</h1>")
+        )
+        self.preview_sockets: list[_EchoSocket] = []
 
     def _check(self) -> None:
         if self.unavailable:
@@ -303,9 +510,14 @@ class InMemorySandboxClient:
 
     def packs(self) -> list[dict[str, Any]]:
         self._check()
-        return [{**p, "state": "ready", "error": None} for p in self.PACKS]
+        return [
+            {**p, "state": "ready", "error": None, "servers": self.SERVERS.get(p["name"], [])}
+            for p in self.PACKS
+        ]
 
-    def create(self, sandbox_id: str, pack: str, files: dict[str, str]) -> dict[str, Any]:
+    def create(
+        self, sandbox_id: str, pack: str, files: dict[str, str], preview_base: str | None = None
+    ) -> dict[str, Any]:
         self._check()
         if sandbox_id in self.sandboxes:
             raise SandboxRequestError(409, "Sandbox already exists")
@@ -315,8 +527,102 @@ class InMemorySandboxClient:
             "state": "running",
             "files": dict(files),
             "commands": [],
+            "previewBase": preview_base,
+            "servers": {s["name"]: "ready" for s in self.SERVERS.get(pack, [])},
+            "logs": {s["name"]: [f"{s['name']} is ready"] for s in self.SERVERS.get(pack, [])},
         }
         return self.info(sandbox_id)
+
+    def check_dependencies(self, pack: str, files: dict[str, str]) -> list[str]:
+        self._check()
+        return []
+
+    def servers(self, sandbox_id: str) -> list[dict[str, Any]]:
+        box = self._get(sandbox_id, running=False)
+        running = box["state"] == "running"
+        return [
+            {
+                **spec,
+                "state": box["servers"][spec["name"]] if running else "stopped",
+                "exitCode": None,
+                "startedAt": None,
+                "readyAt": None,
+            }
+            for spec in self.SERVERS.get(box["pack"], [])
+        ]
+
+    def server_action(self, sandbox_id: str, name: str, action: str) -> list[dict[str, Any]]:
+        box = self._get(sandbox_id)
+        if name not in box["servers"]:
+            raise SandboxRequestError(404, f"No server {name!r}")
+        if action not in ("start", "stop", "restart"):
+            raise SandboxRequestError(400, f"Unknown server action {action!r}")
+        box["servers"][name] = "stopped" if action == "stop" else "ready"
+        box["logs"][name].append(f"[dayline] {action}")
+        return self.servers(sandbox_id)
+
+    def server_logs(self, sandbox_id: str, name: str, since: int) -> dict[str, Any]:
+        lines = self._get(sandbox_id, running=False)["logs"].get(name)
+        if lines is None:
+            raise SandboxRequestError(404, f"No server {name!r}")
+        return {"lines": lines[since:], "next": len(lines), "truncated": False}
+
+    def _preview_box(self, sandbox_id: str, base: str, port: int) -> None:
+        box = self._get(sandbox_id)
+        ports = [s["port"] for s in self.SERVERS.get(box["pack"], [])]
+        if not box["previewBase"] or base != box["previewBase"] or port not in ports:
+            raise SandboxRequestError(404, "No such preview")
+
+    async def preview(
+        self,
+        sandbox_id: str,
+        base: str,
+        port: int,
+        path: str,
+        *,
+        method: str,
+        query: str,
+        headers: list[tuple[str, str]],
+        body: AsyncIterator[bytes] | None,
+    ) -> PreviewResponse:
+        self._preview_box(sandbox_id, base, port)
+        content = b"".join([chunk async for chunk in body]) if body is not None else b""
+        request = {
+            "port": port,
+            "path": path,
+            "method": method,
+            "query": query,
+            "headers": headers,
+            "body": content,
+        }
+        self.preview_requests.append(request)
+        status, reply_headers, reply = self.preview_reply(request)
+
+        async def stream() -> AsyncIterator[bytes]:
+            yield reply
+
+        async def aclose() -> None:
+            return None
+
+        return PreviewResponse(status=status, headers=reply_headers, body=stream(), aclose=aclose)
+
+    @contextlib.asynccontextmanager
+    async def open_preview_socket(
+        self,
+        sandbox_id: str,
+        base: str,
+        port: int,
+        path: str,
+        *,
+        query: str,
+        headers: list[tuple[str, str]],
+        subprotocols: list[str],
+    ) -> AsyncIterator[PreviewSocket]:
+        self._preview_box(sandbox_id, base, port)
+        socket = _EchoSocket(subprotocols[0] if subprotocols else None)
+        socket.received.append(f"connect {path} {headers}")
+        self.preview_sockets.append(socket)
+        yield socket
 
     def info(self, sandbox_id: str) -> dict[str, Any]:
         box = self._get(sandbox_id, running=False)
@@ -327,6 +633,7 @@ class InMemorySandboxClient:
             "createdAt": 1_800_000_000.0,
             "expiresAt": 1_800_005_400.0,
             "idleTimeoutS": 900,
+            "previewBase": box["previewBase"],
         }
 
     def resume(self, sandbox_id: str) -> dict[str, Any]:

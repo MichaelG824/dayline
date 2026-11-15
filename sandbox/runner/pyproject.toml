@@ -16,6 +16,10 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "docker>=7.1",
+    # The preview proxy: an HTTP client over exec tunnels, and the sans-I/O
+    # WebSocket client that bridges hot-reload sockets.
+    "httpcore>=1.0",
+    "websockets>=13.0",
 ]
 
 [tool.hatch.build.targets.wheel]
