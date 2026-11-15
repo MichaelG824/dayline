@@ -54,7 +54,7 @@ The 5 prep categories (`AI_CODING_REACT_PYTHON`, `AI_CODING_DSA`, `BEHAVIORAL`, 
 A staged round is a live session (`kind = live`) with `MockSession.staged_problem_id` + `stages` (migrations 013, then 014 in a separate run), so files, terminal, resume, and end reuse `services/mock_live.py`; the staged parts live in `services/mock_staged.py`.
 
 - **Problems are content, not code**: one folder per problem under `src/dayline/mock/staged_problems/<id>/` (format documented at the top of `mock/staged.py`). Adding a problem means adding a folder; `tests/test_staged_lru.py` shows how to prove each reference passes its stage and one-bug variants fail the right tests.
-- **Hidden tests never touch the workspace tree**: the runner's `POST /sandboxes/{id}/hidden-tests` copies them into the ignored `.dayline/hidden` folder for one run and runs the pack's `hidden_test_cmd` (Python only so far). A stage passes only when the whole cumulative run (active + passed stages, never skipped ones) passes and every one of its own tests ran.
+- **Hidden tests never touch the workspace tree**: the runner's `POST /sandboxes/{id}/hidden-tests` copies them into the ignored `.dayline/hidden` folder for one run and runs the pack's `hidden_test_cmd` (python, rails and next-nest have one). A stage passes only when the whole cumulative run (active + passed stages, never skipped ones) passes and every one of its own tests ran.
 - **Scores are computed in code** (`staged.score_round`): edge cases are "hit" only if they passed the stage's first run; design churn is the share of the previous stage's code lines kept (`REWRITE_THRESHOLD`). The interviewer (`mock/interviewer.py`, `MOCK_MODEL`) only talks; it never changes round state. Notes, hidden tests, and locked stages never reach the client (`serializers.staged_round_json`).
 - Changing `sandbox/` (packs included) means re-running `deploy/sandbox-vm/setup.sh`; an older runner answers hidden-test runs with a 501 "redeploy" error.
 
@@ -68,11 +68,23 @@ Model: `MOCK_ASSISTANT_MODEL`, default `claude-sonnet-4-5` on purpose (the capta
 - A turn in flight is tracked in process memory (one per session) for cancelling; the client also drops the connection after a grace period, which the stream records as stopped.
 - Opt-in real-model test: `RUN_MODEL_TESTS=1 uv run pytest tests/test_mock_assistant_model.py`.
 
+## Full-stack packs and the live preview (Mock tab)
+
+`sandbox/packs/{rails,next-nest}` declare dev servers (`[[servers]]`; the `pack.toml` format is at the top of `dayline_runner/packs.py`). The runner supervises them (`servers.py`) and serves them through its preview proxy (`preview.py`); the Workspace's Preview pane (`web/app/components/mock/PreviewPane.tsx`) shows them.
+
+- Sandboxes keep `network_mode: none`: each preview connection is a `docker exec` of `socat` inside the sandbox (`tunnel.py`), so a pack with servers needs `socat` in its image.
+- `/api/preview/<session>/<token>/<port>/...` is a capability URL. The app is served with a CSP `sandbox` (opaque origin) so it can never act on Dayline's origin, which also means it sends no cookies: that path skips the auth gate and Dayline's CORS middleware on purpose, Dayline answers the app's CORS preflights, and the runner keeps the app's cookies in a per-sandbox jar (`cookies.py`). Previewed apps cannot use `localStorage` or `document.cookie`. See `api/services/mock_preview.py`.
+- Apps serve under `$BASE_PATH` (Next `basePath`, Rails `config.ru` `map`); a server with `base_path = false` (the Nest API) is served from `/` and the proxy strips the prefix.
+- `[dependencies]` is the allowed list, checked both ways against the pack's lockfile at load. Generated projects must pass `deps.project_problems` (runner `POST /packs/{name}/check`, adapter `check_dependencies`); `create` refuses projects that do not.
+- Editor saves are copied into place by a process inside the sandbox (`manager.write_file`), so dev-server file watchers fire under gVisor as well as runc.
+- Pins with reasons: `@swc/core` 1.16.2 (later releases unpack a native addon into a writable, executable folder), TypeScript 6 (swc-node cannot load TS 7), Next needs `turbopack: { root: '/' }` (dependencies live in the image), and Minitest 6 no longer autoloads plugins, so the Rails test commands preload `lib/dayline_junit.rb`.
+- Per-pack `ignore` keeps build output and databases (`.next`, Rails `tmp`/`log`/`storage`) out of the file tree and snapshots; per-pack `memory` raises the sandbox limit (next-nest: 1.5 GiB). VM sizing for these packs is in `deploy/sandbox-vm/README.md`.
+
 ## Auth and production host
 
 Google sign-in is the ownership proof; `ALLOWED_EMAIL` is the only account that may use the app (`api/auth.py`). If it is unset, nobody is allowlisted.
 Unauthenticated `/api/*` calls 401; a valid session for any other email 403.
-`/api/health` and `/api/auth/*` stay public.
+`/api/health`, `/api/auth/*` and the token-authenticated `/api/preview/*` stay public.
 The Next.js middleware (`web/middleware.ts`) is UX only (login / not-allowed screens); FastAPI is the hard gate.
 Browser fetches in `web/app/lib/api.ts` send the session cookie (`credentials: 'include'`).
 
