@@ -9,12 +9,14 @@ import {
   ApiError,
   InterviewerTrigger,
   MockSessionDetail,
+  PreviewStatus,
   SandboxStatus,
   StagedRound,
   TestReport,
   WorkspaceFile,
   endLiveSession,
   getMockSession,
+  getPreviewStatus,
   getSandboxStatus,
   interviewerTurn,
   listWorkspaceFiles,
@@ -30,9 +32,23 @@ import { useIsDark } from '../../lib/useIsDark';
 import { languageExtensions } from '../problems/CodeEditor';
 import { MarkdownView } from '../problems/Markdown';
 import { AssistantPanel } from './AssistantPanel';
+import { PreviewPane } from './PreviewPane';
 import { StagePanel } from './StagePanel';
 import { TestResults, reportCounts } from './TestResults';
 import { ErrorText } from './ui';
+
+// Whether a media query matches, following changes (false before mounting).
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const list = window.matchMedia(query);
+    const sync = () => setMatches(list.matches);
+    sync();
+    list.addEventListener('change', sync);
+    return () => list.removeEventListener('change', sync);
+  }, [query]);
+  return matches;
+}
 
 // xterm touches `window` at import time, so it only loads in the browser.
 const Terminal = dynamic(() => import('./Terminal').then((m) => m.Terminal), { ssr: false });
@@ -100,6 +116,13 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
   const [showTask, setShowTask] = useState(true);
   // The AI assistant (AI-assisted rounds); shares the side with the task.
   const [showAssistant, setShowAssistant] = useState(false);
+  // The pack's dev servers (none for most packs) and the app preview, which
+  // shares the right-hand side with the task.
+  const [preview, setPreview] = useState<PreviewStatus | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  // Below 2xl the side holds one of them; the one opened last wins.
+  const [lastSide, setLastSide] = useState<'assistant' | 'preview'>('assistant');
+  const wideSide = useMediaQuery('(min-width: 1536px)');
   const [staged, setStaged] = useState<StagedRound | null>(null);
   const [thinking, setThinking] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -134,6 +157,15 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
   );
 
   const sandboxRunning = sandbox?.state === 'running';
+  const hasServers = (preview?.servers.length ?? 0) > 0;
+  const assistantVisible = showAssistant && (wideSide || !showPreview || lastSide === 'assistant');
+  const previewVisible = showPreview && (wideSide || !showAssistant || lastSide === 'preview');
+  const bothSides = assistantVisible && previewVisible;
+
+  useEffect(() => {
+    if (!sandboxRunning) return;
+    getPreviewStatus(sessionId).then(setPreview, () => undefined);
+  }, [sessionId, sandboxRunning]);
 
   const refreshSandbox = useCallback(async () => {
     try {
@@ -543,10 +575,12 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
           {session?.assistant && (
             <button
               onClick={() => {
-                setShowAssistant((v) => !v);
+                const opening = !assistantVisible;
+                setShowAssistant(opening);
                 setShowTask(false);
+                if (opening) setLastSide('assistant');
               }}
-              className={`${HEADER_BUTTON} ${showAssistant ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}
+              className={`${HEADER_BUTTON} ${assistantVisible ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}
               title="Your AI coding assistant: ask, plan, or edit"
             >
               <span className="sm:hidden">AI</span>
@@ -557,13 +591,43 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
             onClick={() => {
               setShowTask((v) => !v);
               setShowAssistant(false);
+              setShowPreview(false);
             }}
             className={`${staged ? '' : 'hidden lg:inline-block'} ${HEADER_BUTTON} ${
-              showTask ? 'bg-zinc-100 dark:bg-zinc-900' : ''
+              showTask && !showPreview && !showAssistant ? 'bg-zinc-100 dark:bg-zinc-900' : ''
             }`}
           >
             {staged ? 'Stage' : 'Task'}
           </button>
+          {hasServers && (
+            <button
+              onClick={() => {
+                const opening = !previewVisible;
+                setShowPreview(opening);
+                setShowTask(false);
+                if (opening) setLastSide('preview');
+              }}
+              disabled={!sandboxRunning}
+              className={`${HEADER_BUTTON} inline-flex items-center gap-2 ${
+                previewVisible ? 'bg-zinc-100 dark:bg-zinc-900' : ''
+              }`}
+              title="The running app"
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  preview?.servers.every((s) => s.state === 'ready')
+                    ? 'bg-emerald-500'
+                    : preview?.servers.some((s) => s.state === 'exited')
+                      ? 'bg-rose-500'
+                      : preview?.servers.some((s) => s.state === 'starting')
+                        ? 'bg-amber-500'
+                        : 'bg-zinc-300 dark:bg-zinc-600'
+                }`}
+              />
+              <span className="sm:hidden">App</span>
+              <span className="hidden sm:inline">Preview</span>
+            </button>
+          )}
           <button
             onClick={() => void (staged ? handleRunStageTests() : handleRunTests())}
             disabled={!sandboxRunning || running || (staged != null && staged.activeStage == null)}
@@ -735,7 +799,22 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
           </div>
         </main>
 
-        {showTask && staged && (
+        {previewVisible && preview && sandboxRunning && (
+          // Narrower when the assistant is open beside it (2xl screens only).
+          <aside
+            className={`absolute inset-0 z-10 sm:left-auto sm:w-[min(40rem,92%)] sm:border-l sm:shadow-xl lg:static lg:z-auto lg:shadow-none lg:min-w-[24rem] lg:max-w-[56rem] shrink-0 border-zinc-200 dark:border-zinc-800 ${
+              bothSides ? 'lg:w-[34%]' : 'lg:w-[46%]'
+            }`}
+          >
+            <PreviewPane
+              sessionId={sessionId}
+              initial={preview}
+              onStatus={setPreview}
+              onClose={() => setShowPreview(false)}
+            />
+          </aside>
+        )}
+        {showTask && !showPreview && !showAssistant && staged && (
           <aside className="absolute inset-0 z-10 sm:left-auto sm:w-[26rem] sm:border-l sm:shadow-xl lg:static lg:z-auto lg:shadow-none shrink-0 border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950">
             <StagePanel
               staged={staged}
@@ -760,12 +839,14 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
           // Kept mounted while hidden, so a reply keeps streaming.
           <aside
             className={`${
-              showAssistant ? '' : 'hidden'
-            } absolute inset-0 z-10 sm:left-auto sm:w-[26rem] sm:border-l sm:shadow-xl lg:static lg:z-auto lg:shadow-none xl:w-[30rem] shrink-0 border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950`}
+              assistantVisible ? '' : 'hidden'
+            } absolute inset-0 z-10 sm:left-auto sm:w-[26rem] sm:border-l sm:shadow-xl lg:static lg:z-auto lg:shadow-none ${
+              bothSides ? '' : 'xl:w-[30rem]'
+            } shrink-0 border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950`}
           >
             <AssistantPanel
               sessionId={sessionId}
-              open={showAssistant}
+              open={assistantVisible}
               enabled={sandboxRunning}
               beforeSend={save}
               onApplied={(path) => void handleAssistantApplied(path)}
@@ -778,7 +859,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
             />
           </aside>
         )}
-        {showTask && !staged && (
+        {showTask && !showPreview && !showAssistant && !staged && (
           <aside className="hidden lg:block w-[24rem] shrink-0 overflow-y-auto border-l border-zinc-200 dark:border-zinc-800 px-5 py-4">
             <MarkdownView empty="No task description.">{session?.taskMd ?? ''}</MarkdownView>
           </aside>

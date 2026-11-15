@@ -1158,3 +1158,75 @@ export function terminalUrl(sessionId: string, cols: number, rows: number): stri
   url.search = `cols=${cols}&rows=${rows}`;
   return url.toString();
 }
+
+// Dev servers and the live app preview (packs like rails and next-nest).
+// The preview itself is an iframe on `${base}/${port}`: the base carries an
+// unguessable token and the app runs sandboxed (see
+// dayline.api.services.mock_preview).
+export type DevServerState = 'stopped' | 'starting' | 'ready' | 'exited';
+
+export interface DevServer {
+  name: string;
+  port: number;
+  readyPath: string | null;
+  state: DevServerState;
+  exitCode: number | null;
+  startedAt: number | null; // epoch seconds
+  readyAt: number | null;
+}
+
+export interface PreviewStatus {
+  // null: the sandbox started before previews existed.
+  base: string | null;
+  // Empty for packs without dev servers.
+  servers: DevServer[];
+}
+
+export interface ServerLogs {
+  lines: string[];
+  next: number;
+  // Lines after `since` were already dropped from the buffer.
+  truncated: boolean;
+}
+
+export type ServerAction = 'start' | 'stop' | 'restart';
+
+export async function getPreviewStatus(sessionId: string): Promise<PreviewStatus> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/preview`);
+  return (await checkOk(res, 'Could not load the dev servers')).json();
+}
+
+export async function devServerAction(
+  sessionId: string,
+  server: string,
+  action: ServerAction,
+): Promise<PreviewStatus> {
+  const res = await apiFetch(
+    `/api/mock/sessions/${sessionId}/servers/${encodeURIComponent(server)}/${action}`,
+    { method: 'POST' },
+  );
+  return (await checkOk(res, `Could not ${action} ${server}`)).json();
+}
+
+export async function getServerLogs(sessionId: string, server: string, since: number): Promise<ServerLogs> {
+  const res = await apiFetch(
+    `/api/mock/sessions/${sessionId}/servers/${encodeURIComponent(server)}/logs?since=${since}`,
+  );
+  return (await checkOk(res, 'Could not load the logs')).json();
+}
+
+// For the session record only; a failure is not worth showing.
+export async function notePreviewReloaded(sessionId: string, server: string): Promise<void> {
+  await apiFetch(`/api/mock/sessions/${sessionId}/preview/reloaded`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server }),
+  }).catch(() => undefined);
+}
+
+// The app's URL. `path` is the app's own path; "/" is its root, which has no
+// trailing slash (Next's basePath root redirects one away).
+export function previewUrl(base: string, port: number, path = '/'): string {
+  const suffix = path === '/' || path === '' ? '' : path.startsWith('/') ? path : `/${path}`;
+  return `${API}${base}/${port}${suffix}`;
+}
