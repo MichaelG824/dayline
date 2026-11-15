@@ -10,6 +10,7 @@ import pytest
 
 from dayline_runner.commands import parse_command_log
 from dayline_runner.junit import build_report, parse_junit, tail
+from dayline_runner.manager import PtyHandle
 from dayline_runner.packs import HIDDEN_TESTS_DIR, JUNIT_PATH, PackError, load_pack, load_packs
 from dayline_runner.workspace import (
     WorkspacePathError,
@@ -174,3 +175,23 @@ def test_command_log_skips_malformed_lines() -> None:
         (1700000000.0, 0, "pytest -q"),
         (1700000010.0, 2, "npm test"),
     ]
+
+
+class _QuietSocket:
+    """A socket that times out twice (an idle shell) before output arrives."""
+
+    def __init__(self, *events: bytes | type[OSError]) -> None:
+        self.events = list(events)
+
+    def recv(self, _size: int) -> bytes:
+        event = self.events.pop(0)
+        if isinstance(event, type):
+            raise event()
+        return event
+
+
+def test_a_quiet_shell_is_not_mistaken_for_one_that_exited() -> None:
+    sock = _QuietSocket(TimeoutError, TimeoutError, b"$ ", OSError)
+    handle = PtyHandle(sandbox_id="s1", exec_id="e1", sock=sock, pid_file="/tmp/p")  # type: ignore[arg-type]
+    assert handle.recv() == b"$ "
+    assert handle.recv() == b""  # Closed: the shell is gone.

@@ -26,8 +26,11 @@ export function reportCounts(report: TestReport): string {
 
 // Where a test lives, shortly: pytest classnames are dotted module paths
 // (tests.test_checkout -> test_checkout); vitest's are file paths
-// (src/limiter.test.ts -> limiter.test.ts).
+// (src/limiter.test.ts -> limiter.test.ts). A staged round's hidden tests
+// (test_stage_2_ttl) read as their stage.
 export function caseWhere(classname: string): string {
+  const stage = /^test_stage_(\d+)_/.exec(classname);
+  if (stage) return `Stage ${stage[1]}`;
   if (classname.includes('/') || /\.[cm]?[jt]sx?$/.test(classname)) {
     return classname.split('/').pop() ?? classname;
   }

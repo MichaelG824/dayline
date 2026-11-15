@@ -122,10 +122,16 @@ class PtyHandle:
     pid_file: str
 
     def recv(self) -> bytes:
-        try:
-            return self.sock.recv(65536)
-        except OSError:
-            return b""
+        """The next output, or ``b""`` once the shell is gone. The socket
+        keeps the Docker client's read timeout (60s by default); that only
+        means the shell was quiet, so keep waiting."""
+        while True:
+            try:
+                return self.sock.recv(65536)
+            except TimeoutError:
+                continue
+            except OSError:
+                return b""
 
     def send(self, data: bytes) -> None:
         self.sock.sendall(data)

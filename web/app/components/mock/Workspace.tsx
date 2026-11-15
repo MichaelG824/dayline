@@ -7,23 +7,29 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
+  InterviewerTrigger,
   MockSessionDetail,
   SandboxStatus,
+  StagedRound,
   TestReport,
   WorkspaceFile,
   endLiveSession,
   getMockSession,
   getSandboxStatus,
+  interviewerTurn,
   listWorkspaceFiles,
   readWorkspaceFile,
   resumeSandbox,
+  runStageTests,
   runWorkspaceTests,
+  skipStage,
   writeWorkspaceFile,
 } from '../../lib/api';
 import { FileNode, buildFileTree, formatClock, languageForPath } from '../../lib/mock';
 import { useIsDark } from '../../lib/useIsDark';
 import { languageExtensions } from '../problems/CodeEditor';
 import { MarkdownView } from '../problems/Markdown';
+import { StagePanel } from './StagePanel';
 import { TestResults, reportCounts } from './TestResults';
 import { ErrorText } from './ui';
 
@@ -48,7 +54,7 @@ interface OpenFile {
 type Panel = 'terminal' | 'tests';
 
 const HEADER_BUTTON =
-  'px-3 py-1.5 text-sm rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-zinc-700 disabled:opacity-40';
+  'px-3 py-1.5 text-sm whitespace-nowrap rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-zinc-700 disabled:opacity-40';
 
 // Prec.highest so it beats the light/dark theme's own background. The
 // gutter must be opaque: long lines scroll sideways underneath it.
@@ -75,6 +81,10 @@ interface Props {
 // filling the window like a coding-interview pad. Edits autosave to the
 // sandbox; a file changed underneath (from the terminal) is reloaded when
 // clean and flagged as a conflict when there are unsaved edits.
+//
+// A staged round swaps the task for the stage panel (progress, the active
+// stage's prompt, the interviewer chat), and Run tests runs the active
+// stage's hidden tests, which unlock the next stage when they pass.
 export function Workspace({ sessionId, onExit, onEnded }: Props) {
   const [session, setSession] = useState<MockSessionDetail | null>(null);
   const [sandbox, setSandbox] = useState<SandboxStatus | null>(null);
@@ -87,6 +97,12 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
   // when it is already the open tab.
   const [panelClicks, setPanelClicks] = useState(0);
   const [showTask, setShowTask] = useState(true);
+  const [staged, setStaged] = useState<StagedRound | null>(null);
+  const [thinking, setThinking] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  // What to resend when "Try again" is clicked after a failed interviewer turn.
+  const lastTurn = useRef<{ trigger: InterviewerTrigger; message?: string } | null>(null);
+  const [skipping, setSkipping] = useState<'idle' | 'confirm' | 'skipping'>('idle');
   const [ending, setEnding] = useState<'idle' | 'confirm' | 'ending'>('idle');
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -191,6 +207,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
         if (cancelled) return;
         setSession(detail);
         setReport(detail.testReport ?? null);
+        setStaged(detail.staged ?? null);
         if (detail.status !== 'live') {
           onEndedRef.current(sessionId);
           return;
@@ -297,6 +314,115 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
     }
   }
 
+  // One interviewer turn. The candidate's own message shows at once; the
+  // round that comes back (with the reply) replaces it. A failed turn can be
+  // retried: the server keeps a message even when the reply fails, and a
+  // "message" turn without text replies to it.
+  const askInterviewer = useCallback(
+    async (trigger: InterviewerTrigger, message?: string) => {
+      lastTurn.current = { trigger, message };
+      setThinking(true);
+      setChatError(null);
+      if (message) {
+        setStaged((prev) =>
+          prev && {
+            ...prev,
+            chat: [
+              ...prev.chat,
+              { role: 'candidate', text: message, stage: prev.activeStage ?? 0, at: new Date().toISOString() },
+            ],
+          },
+        );
+      }
+      try {
+        await save();
+        setStaged(await interviewerTurn(sessionId, trigger, message));
+        lastTurn.current = null;
+      } catch (err) {
+        setChatError(errorMessage(err, 'The interviewer could not reply.'));
+        try {
+          const fresh = (await getMockSession(sessionId)).staged ?? null;
+          setStaged(fresh);
+          const last = fresh?.chat[fresh.chat.length - 1];
+          if (message && last?.role === 'candidate' && last.text === message) {
+            lastTurn.current = { trigger: 'message' };
+          }
+        } catch {
+          // Keep what is on screen.
+        }
+      } finally {
+        setThinking(false);
+      }
+    },
+    [sessionId, save],
+  );
+
+  // The interviewer opens each stage (and closes the round) once; the server
+  // ignores a repeat, so a reload or a double call is harmless.
+  const opened = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!staged || session?.status !== 'live' || !sandboxRunning) return;
+    const stage = staged.activeStage ?? 0;
+    const said = staged.chat.some((m) => m.role === 'interviewer' && m.stage === stage);
+    if (said || opened.current.has(stage)) return;
+    opened.current.add(stage);
+    void askInterviewer('stage_start');
+  }, [staged, session?.status, sandboxRunning, askInterviewer]);
+
+  async function handleRunStageTests() {
+    setPanel('tests');
+    setRunning(true);
+    setError(null);
+    try {
+      await save();
+      const run = await runStageTests(sessionId);
+      setReport(run.report);
+      setStaged(run.staged);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not run the tests.'));
+      if (err instanceof ApiError && err.status === 409) void refreshSandbox();
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function handleSkip() {
+    if (skipping === 'idle') {
+      setSkipping('confirm');
+      return;
+    }
+    setSkipping('skipping');
+    setError(null);
+    try {
+      await save();
+      setStaged(await skipStage(sessionId));
+      setReport(null);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not skip the stage.'));
+    } finally {
+      setSkipping('idle');
+    }
+  }
+
+  useEffect(() => {
+    if (skipping !== 'confirm') return;
+    const timer = setTimeout(() => setSkipping('idle'), 4000);
+    return () => clearTimeout(timer);
+  }, [skipping]);
+
+  async function handleFinish() {
+    setEnding('ending');
+    setError(null);
+    try {
+      await save();
+      await endLiveSession(sessionId);
+      onEnded(sessionId);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not finish the round.'));
+      setEnding('idle');
+    }
+  }
+
   async function handleEnd() {
     if (ending === 'idle') {
       setEnding('confirm');
@@ -385,22 +511,35 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
           )}
           {startedAt && (
             <span
-              className={`font-mono text-sm tabular-nums ${
+              className={`font-mono text-sm tabular-nums whitespace-nowrap ${
                 limit && elapsed > limit ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500'
               }`}
               title={limit ? `${session?.durationMin} minute round` : undefined}
             >
               {formatClock(elapsed)}
-              {limit ? <span className="text-zinc-400 dark:text-zinc-600"> / {formatClock(limit)}</span> : null}
+              {limit ? (
+                <span className="hidden sm:inline text-zinc-400 dark:text-zinc-600"> / {formatClock(limit)}</span>
+              ) : null}
             </span>
           )}
           <button
             onClick={() => setShowTask((v) => !v)}
-            className={`hidden lg:inline-block ${HEADER_BUTTON} ${showTask ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}
+            className={`${staged ? '' : 'hidden lg:inline-block'} ${HEADER_BUTTON} ${
+              showTask ? 'bg-zinc-100 dark:bg-zinc-900' : ''
+            }`}
           >
-            Task
+            {staged ? 'Stage' : 'Task'}
           </button>
-          <button onClick={() => void handleRunTests()} disabled={!sandboxRunning || running} className={HEADER_BUTTON}>
+          <button
+            onClick={() => void (staged ? handleRunStageTests() : handleRunTests())}
+            disabled={!sandboxRunning || running || (staged != null && staged.activeStage == null)}
+            className={HEADER_BUTTON}
+            title={
+              staged?.activeStage
+                ? `Runs stage ${staged.activeStage}'s hidden tests, plus those of every stage you passed`
+                : undefined
+            }
+          >
             {running ? 'Running…' : 'Run tests'}
           </button>
           <button
@@ -426,7 +565,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex">
+      <div className="relative flex-1 min-h-0 flex">
         <aside className="hidden md:flex w-56 shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
           <p className="px-4 pt-3 pb-2 font-mono text-xs tracking-widest text-zinc-500">FILES</p>
           <nav className="flex-1 overflow-y-auto pb-3 text-sm">
@@ -551,7 +690,28 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
           </div>
         </main>
 
-        {showTask && (
+        {showTask && staged && (
+          <aside className="absolute inset-0 z-10 sm:left-auto sm:w-[26rem] sm:border-l sm:shadow-xl lg:static lg:z-auto lg:shadow-none shrink-0 border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950">
+            <StagePanel
+              staged={staged}
+              now={now}
+              thinking={thinking}
+              chatError={chatError}
+              skipping={skipping}
+              finishing={ending === 'ending'}
+              onSend={(text) => void askInterviewer('message', text)}
+              onFollowUp={() => void askInterviewer('follow_up')}
+              onRetry={() => {
+                const turn = lastTurn.current ?? { trigger: 'follow_up' as const };
+                void askInterviewer(turn.trigger, turn.message);
+              }}
+              onSkip={() => void handleSkip()}
+              onFinish={() => void handleFinish()}
+              onClose={() => setShowTask(false)}
+            />
+          </aside>
+        )}
+        {showTask && !staged && (
           <aside className="hidden lg:block w-[24rem] shrink-0 overflow-y-auto border-l border-zinc-200 dark:border-zinc-800 px-5 py-4">
             <MarkdownView empty="No task description.">{session?.taskMd ?? ''}</MarkdownView>
           </aside>

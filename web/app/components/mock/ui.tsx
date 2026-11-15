@@ -38,16 +38,25 @@ export function BackButton({ onClick, children }: { onClick: () => void; childre
     <button
       type="button"
       onClick={onClick}
-      className="self-start text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+      className="w-fit text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
     >
       &lsaquo; {children}
     </button>
   );
 }
 
-export function Pill({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+export function Pill({
+  children,
+  className = '',
+  title,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  title?: string;
+}) {
   return (
     <span
+      title={title}
       className={`inline-flex items-center text-xs font-mono px-2 py-0.5 rounded-full whitespace-nowrap bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 ${className}`}
     >
       {children}

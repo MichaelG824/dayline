@@ -47,7 +47,16 @@ The 5 prep categories (`AI_CODING_REACT_PYTHON`, `AI_CODING_DSA`, `BEHAVIORAL`, 
 - **Duplicates are suggestions, never merges.** `mock/ingest.py` shortlists similar canonical questions (rapidfuzz on title + prompt); the user picks "same as" on save. Copies point at a root via `canonical_id`, one level deep (`services/mock.py` `_canonical_target`).
 - **Weak areas become tasks only via `POST /api/chat/confirm`.** `weak_area_proposals` emits `propose_new_task` proposals carrying `mock_session_id`; `apply_proposal` copies it onto the task. The client offers only proposals not yet added, so already-added ones are never logged as rejected.
 - **Live sessions never touch Docker from Dayline.** Code runs in the separate `sandbox/runner` service (its own `pyproject.toml`; the only process with Docker access), reached by `adapters/sandbox.py` over HTTP/WebSocket via `SANDBOX_RUNNER_URL` + `SANDBOX_RUNNER_SECRET`. Templates live in `mock/templates/` (migration `012_mock_live_sessions.sql`). Runner Docker tests are opt-in: `RUN_DOCKER_TESTS=1 uv run pytest sandbox/runner/tests/test_runner_docker.py`.
-- Models: `MOCK_MODEL` (extraction; default `claude-sonnet-5-5`) and `MOCK_GRADER_MODEL` (default `claude-opus-5-5`), see `mock/__init__.py`.
+- Models: `MOCK_MODEL` (extraction and the staged-round interviewer; default `claude-sonnet-5-5`) and `MOCK_GRADER_MODEL` (default `claude-opus-5-5`), see `mock/__init__.py`.
+
+## Staged practical rounds (Mock tab)
+
+A staged round is a live session (`kind = live`) with `MockSession.staged_problem_id` + `stages` (migrations 013, then 014 in a separate run), so files, terminal, resume, and end reuse `services/mock_live.py`; the staged parts live in `services/mock_staged.py`.
+
+- **Problems are content, not code**: one folder per problem under `src/dayline/mock/staged_problems/<id>/` (format documented at the top of `mock/staged.py`). Adding a problem means adding a folder; `tests/test_staged_lru.py` shows how to prove each reference passes its stage and one-bug variants fail the right tests.
+- **Hidden tests never touch the workspace tree**: the runner's `POST /sandboxes/{id}/hidden-tests` copies them into the ignored `.dayline/hidden` folder for one run and runs the pack's `hidden_test_cmd` (Python only so far). A stage passes only when the whole cumulative run (active + passed stages, never skipped ones) passes and every one of its own tests ran.
+- **Scores are computed in code** (`staged.score_round`): edge cases are "hit" only if they passed the stage's first run; design churn is the share of the previous stage's code lines kept (`REWRITE_THRESHOLD`). The interviewer (`mock/interviewer.py`, `MOCK_MODEL`) only talks; it never changes round state. Notes, hidden tests, and locked stages never reach the client (`serializers.staged_round_json`).
+- Changing `sandbox/` (packs included) means re-running `deploy/sandbox-vm/setup.sh`; an older runner answers hidden-test runs with a 501 "redeploy" error.
 
 ## Auth and production host
 

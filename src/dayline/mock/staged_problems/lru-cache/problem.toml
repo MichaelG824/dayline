@@ -2,7 +2,7 @@ title = "Production LRU cache"
 pack = "python"
 round_type = "Practical coding"
 duration_min = 75
-summary = "Build an LRU cache, then extend your own code as the interviewer adds production follow-ups, one stage at a time."
+summary = "Start from get and put on a cache every backend has. The interviewer takes it to production from there."
 # The file the editor opens first.
 open = "lru_cache.py"
 # The candidate's solution: what the interviewer reads, and what is compared

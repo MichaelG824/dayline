@@ -23,7 +23,6 @@ from dayline.models import (
     MockQuestion,
     MockRubric,
     MockSession,
-    MockSessionStatus,
     Plan,
     Problem,
     ProblemTag,
@@ -294,17 +293,16 @@ def staged_round_json(
     problem: StagedProblem, session: MockSession, events: list[MockEvent], now: datetime
 ) -> dict[str, Any]:
     """The candidate's view of a staged round. Hidden tests and interviewer
-    notes never leave the server; a locked stage shows only its number, and a
-    live round's edge cases stay hidden until their stage is over (their
-    titles would give the cases away)."""
-    ended = session.status is MockSessionStatus.ENDED
+    notes never leave the server; a stage never reached shows only its number
+    (so the problem can be practised again unspoiled), and a stage's edge
+    cases stay hidden until it is over (their titles give the cases away)."""
     active = active_index(session.stages)
     stages = []
     for stage, attempt, result in zip(
         problem.stages, session.stages, score_round(problem, session.stages, now), strict=True
     ):
         locked = attempt.status is StageStatus.LOCKED
-        show_edges = ended or attempt.status not in (StageStatus.ACTIVE, StageStatus.LOCKED)
+        show_edges = attempt.status not in (StageStatus.ACTIVE, StageStatus.LOCKED)
         stages.append(
             {
                 "number": stage.number,

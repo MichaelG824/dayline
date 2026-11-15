@@ -11,6 +11,7 @@ import {
   getMockQuestions,
   getMockRubrics,
   startLiveSession,
+  startStagedRound,
 } from '../../lib/api';
 import { BackButton, CARD, ErrorText, FIELD, Label, PRIMARY_BUTTON, Pill, QUIET_BUTTON } from './ui';
 
@@ -19,13 +20,27 @@ interface Props {
   onStarted: (sessionId: string) => void;
 }
 
-// Pick a practice repo, then the rubric it will be graded on.
+// What a session practises: a staged round (an interviewer adds follow-ups
+// to your own code, stage by stage) or a practice repo.
+type Choice = { kind: 'staged' | 'template'; id: string };
+
+interface Option {
+  choice: Choice;
+  title: string;
+  summary: string;
+  pack: string;
+  roundType: string;
+  durationMin: number;
+  stageCount?: number;
+}
+
+// Pick a staged round or a practice repo, then the rubric it will be graded on.
 export function LiveStart({ onCancel, onStarted }: Props) {
   const [live, setLive] = useState<LiveAvailability | null>(null);
   const [questions, setQuestions] = useState<MockQuestion[]>([]);
   const [rubrics, setRubrics] = useState<MockRubric[]>([]);
   const [guidelines, setGuidelines] = useState<MockGuideline[]>([]);
-  const [templateId, setTemplateId] = useState('');
+  const [choice, setChoice] = useState<Choice | null>(null);
   const [questionId, setQuestionId] = useState('');
   const [rubricId, setRubricId] = useState('');
   const [guidelineId, setGuidelineId] = useState('');
@@ -39,25 +54,34 @@ export function LiveStart({ onCancel, onStarted }: Props) {
         setQuestions(qs);
         setRubrics(rs);
         setGuidelines(gs);
-        const first = availability.templates[0];
-        setTemplateId(first?.id ?? '');
-        setRubricId((rs.find((r) => r.roundType === first?.roundType) ?? rs[0])?.id ?? '');
+        const first = optionsOf(availability)[0];
+        setChoice(first?.choice ?? null);
+        setRubricId(rubricFor(rs, first?.roundType));
         setGuidelineId(gs[0]?.id ?? '');
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Could not load practice repos.'));
   }, []);
 
+  function choose(option: Option) {
+    setChoice(option.choice);
+    setRubricId(rubricFor(rubrics, option.roundType));
+  }
+
   async function handleStart(e: React.FormEvent) {
     e.preventDefault();
+    if (!choice) return;
     setStarting(true);
     setError(null);
     try {
-      const session = await startLiveSession({
-        templateId,
+      const refs = {
         questionId: questionId || null,
         rubricId: rubricId || null,
         guidelineId: guidelineId || null,
-      });
+      };
+      const session =
+        choice.kind === 'staged'
+          ? await startStagedRound({ problemId: choice.id, ...refs })
+          : await startLiveSession({ templateId: choice.id, ...refs });
       onStarted(session.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not start the session.');
@@ -74,8 +98,10 @@ export function LiveStart({ onCancel, onStarted }: Props) {
     );
   }
 
+  const options = optionsOf(live);
+  const chosen = options.find((o) => o.choice.kind === choice?.kind && o.choice.id === choice.id);
   const packOf = (name: string) => live.packs.find((p) => p.name === name);
-  const chosenPack = packOf(live.templates.find((t) => t.id === templateId)?.pack ?? '');
+  const chosenPack = packOf(chosen?.pack ?? '');
   const packBlocker =
     chosenPack && chosenPack.state !== 'ready'
       ? chosenPack.state === 'failed'
@@ -98,38 +124,55 @@ export function LiveStart({ onCancel, onStarted }: Props) {
         <div className={`${CARD} px-4 py-3 text-sm text-amber-700 dark:text-amber-300`}>{live.reason}</div>
       )}
 
-      <fieldset className="flex flex-col gap-2">
-        <legend className="block text-xs font-mono text-zinc-500 mb-1">Practice repo</legend>
-        {live.templates.map((t) => {
-          const pack = packOf(t.pack);
-          const selected = t.id === templateId;
-          return (
-            <label
-              key={t.id}
-              className={`${CARD} flex items-start gap-3 px-4 py-3 cursor-pointer ${
-                selected ? '!border-indigo-400 dark:!border-indigo-500/70' : 'hover:border-zinc-300 dark:hover:border-zinc-700'
-              }`}
-            >
-              <input
-                type="radio"
-                name="template"
-                checked={selected}
-                onChange={() => setTemplateId(t.id)}
-                className="mt-1 accent-indigo-500"
-              />
-              <span className="flex-1 min-w-0 flex flex-col gap-1">
-                <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{t.title}</span>
-                <span className="text-sm text-zinc-500">{t.summary}</span>
-                <span className="flex items-center gap-2 flex-wrap mt-0.5">
-                  <Pill>{pack?.displayName ?? t.pack}</Pill>
-                  <Pill>{t.roundType}</Pill>
-                  <Pill>{t.durationMin} min</Pill>
-                </span>
-              </span>
-            </label>
-          );
-        })}
-      </fieldset>
+      {(['staged', 'template'] as const).map((kind) => {
+        const group = options.filter((o) => o.choice.kind === kind);
+        if (group.length === 0) return null;
+        return (
+          <fieldset key={kind} className="flex flex-col gap-2">
+            <legend className="block text-xs font-mono text-zinc-500 mb-1">
+              {kind === 'staged' ? 'Staged round' : 'Practice repo'}
+            </legend>
+            {kind === 'staged' && (
+              <p className="-mt-1 mb-1 text-sm text-zinc-500">
+                An interviewer adds production follow-ups to your own code, one stage at a time. Hidden tests
+                unlock each stage.
+              </p>
+            )}
+            {group.map((o) => {
+              const pack = packOf(o.pack);
+              const selected = o.choice.kind === choice?.kind && o.choice.id === choice.id;
+              return (
+                <label
+                  key={o.choice.id}
+                  className={`${CARD} flex items-start gap-3 px-4 py-3 cursor-pointer ${
+                    selected
+                      ? '!border-indigo-400 dark:!border-indigo-500/70'
+                      : 'hover:border-zinc-300 dark:hover:border-zinc-700'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="practice"
+                    checked={selected}
+                    onChange={() => choose(o)}
+                    className="mt-1 accent-indigo-500"
+                  />
+                  <span className="flex-1 min-w-0 flex flex-col gap-1">
+                    <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{o.title}</span>
+                    <span className="text-sm text-zinc-500">{o.summary}</span>
+                    <span className="flex items-center gap-2 flex-wrap mt-0.5">
+                      <Pill>{pack?.displayName ?? o.pack}</Pill>
+                      <Pill>{o.roundType}</Pill>
+                      {o.stageCount != null && <Pill>{o.stageCount} stages</Pill>}
+                      <Pill>{o.durationMin} min</Pill>
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </fieldset>
+        );
+      })}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div>
@@ -183,7 +226,7 @@ export function LiveStart({ onCancel, onStarted }: Props) {
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={starting || !live.available || !templateId || packBlocker != null}
+          disabled={starting || !live.available || !chosen || packBlocker != null}
           className={PRIMARY_BUTTON}
         >
           {starting ? 'Starting the sandbox…' : 'Start'}
@@ -194,4 +237,31 @@ export function LiveStart({ onCancel, onStarted }: Props) {
       </div>
     </form>
   );
+}
+
+function optionsOf(live: LiveAvailability): Option[] {
+  return [
+    ...(live.stagedProblems ?? []).map((p) => ({
+      choice: { kind: 'staged' as const, id: p.id },
+      title: p.title,
+      summary: p.summary,
+      pack: p.pack,
+      roundType: p.roundType,
+      durationMin: p.durationMin,
+      stageCount: p.stageCount,
+    })),
+    ...live.templates.map((t) => ({
+      choice: { kind: 'template' as const, id: t.id },
+      title: t.title,
+      summary: t.summary,
+      pack: t.pack,
+      roundType: t.roundType,
+      durationMin: t.durationMin,
+    })),
+  ];
+}
+
+// The rubric for a round type, else the first one.
+function rubricFor(rubrics: MockRubric[], roundType: string | undefined): string {
+  return (rubrics.find((r) => r.roundType === roundType) ?? rubrics[0])?.id ?? '';
 }

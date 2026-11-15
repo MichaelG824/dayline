@@ -35,8 +35,8 @@ export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
         <div>
           <h2 className="text-lg font-semibold">Practice</h2>
           <p className="text-sm text-zinc-500">
-            Code a practice repo in a sandbox, or paste a past mock's transcript. Either way you get scored
-            against your rubric, with evidence.
+            Code a staged round or a practice repo in a sandbox, or paste a past mock's transcript. Either way
+            you get scored against your rubric, with evidence.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -83,6 +83,10 @@ export function SessionList({ onOpen, onNewLive, onNewGrading }: Props) {
                 (s.status === 'live' ? (
                   <Pill className="!bg-emerald-100 dark:!bg-emerald-500/15 !text-emerald-700 dark:!text-emerald-300">
                     In progress
+                  </Pill>
+                ) : s.stagedProblemId ? (
+                  <Pill title="Stages passed">
+                    Staged · {s.stagesPassed}/{s.stageCount}
                   </Pill>
                 ) : (
                   <Pill>Live</Pill>

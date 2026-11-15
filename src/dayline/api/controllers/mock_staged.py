@@ -20,6 +20,7 @@ router = APIRouter()
 
 class StartRequest(BaseModel):
     problemId: str
+    questionId: str | None = None
     rubricId: str | None = None
     guidelineId: str | None = None
 
@@ -32,7 +33,9 @@ class InterviewerRequest(BaseModel):
 
 @router.post("/api/mock/staged/sessions", status_code=201)
 def start_round(body: StartRequest, ctx: ContextDep) -> dict[str, Any]:
-    session_id = service.start_round(ctx, body.problemId, body.rubricId, body.guidelineId)
+    session_id = service.start_round(
+        ctx, body.problemId, body.questionId, body.rubricId, body.guidelineId
+    )
     return mock_service.get_session(ctx, session_id)
 
 

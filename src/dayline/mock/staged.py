@@ -340,9 +340,11 @@ def _code_lines(files: dict[str, str]) -> list[str]:
 
 def design_change(before: dict[str, str], after: dict[str, str]) -> DesignChange | None:
     """Did a stage extend the previous stage's code or rewrite it? Measured
-    as the share of the earlier code's lines that are still there, in order."""
+    as the share of the earlier code's lines that are still there, in order.
+    ``None`` when there is nothing to compare, or the code did not change (a
+    stage skipped or ended untouched neither extended nor rewrote anything)."""
     old, new = _code_lines(before), _code_lines(after)
-    if not old or not new:
+    if not old or not new or old == new:
         return None
     matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
     kept = sum(block.size for block in matcher.get_matching_blocks()) / len(old)

@@ -65,7 +65,11 @@ def round_json(ctx: AppContext, session: MockSession, problem: StagedProblem) ->
 
 
 def start_round(
-    ctx: AppContext, problem_id: str, rubric_id: str | None, guideline_id: str | None
+    ctx: AppContext,
+    problem_id: str,
+    question_id: str | None,
+    rubric_id: str | None,
+    guideline_id: str | None,
 ) -> str:
     """Create the session and its sandbox with stage 1 active; returns the
     session id. If the sandbox cannot start, the session is not kept."""
@@ -73,13 +77,14 @@ def start_round(
     problem = staged.builtin_staged_problems().get(problem_id)
     if problem is None:
         raise HTTPException(status_code=404, detail=f"No staged problem {problem_id!r}")
-    check_session_refs(ctx, None, rubric_id, guideline_id)
+    check_session_refs(ctx, question_id, rubric_id, guideline_id)
 
     now = datetime.now(UTC)
     session = ctx.mock_source.create_session(
         MockSession(
             id=str(uuid.uuid4()),
             title=problem.title,
+            question_id=question_id or None,
             rubric_id=rubric_id or None,
             guideline_id=guideline_id or None,
             kind=MockSessionKind.LIVE,
@@ -184,15 +189,14 @@ def interviewer_turn(
     closes the round once every stage is done) and happens once per stage, so
     a reload never repeats it; ``follow_up`` asks the next question;
     ``message`` records the candidate's message first, then replies to it.
-    If the model call fails, a candidate message is still kept."""
+    The candidate's message is kept even if the reply fails, and ``message``
+    with no text retries the reply to it."""
     session, problem = _staged_session(ctx, session_id)
     index = staged.active_index(session.stages)
     # Messages are filed under the active stage; 0 once every stage is done.
     number = 0 if index is None else index + 1
-    if trigger == "message":
-        text = (message or "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="Write a message first")
+    text = (message or "").strip()
+    if trigger == "message" and text:
         if len(text) > MAX_MESSAGE_CHARS:
             raise HTTPException(
                 status_code=400, detail=f"Keep messages under {MAX_MESSAGE_CHARS} characters"
@@ -200,6 +204,9 @@ def interviewer_turn(
         event(ctx, session_id, MockEventKind.CANDIDATE_MESSAGE, stage=number, text=text)
 
     events = ctx.mock_source.list_events(session_id)
+    chat = _chat(events)
+    if trigger == "message" and (not chat or chat[-1].role != "candidate"):
+        raise HTTPException(status_code=400, detail="Write a message first")
     if trigger == "stage_start" and _opened(events, number):
         return round_json(ctx, session, problem)
     code = _solution(ctx, session_id, problem)
@@ -211,7 +218,7 @@ def interviewer_turn(
             session.stages,
             index,
             code,
-            _chat(events),
+            chat,
             trigger,
         )
     except InterviewerError as exc:

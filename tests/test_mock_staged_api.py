@@ -198,6 +198,23 @@ def test_a_full_round_passes_every_stage(client: TestClient) -> None:
     assert client.post(f"/api/mock/sessions/{sid}/stage/skip").status_code == 409
 
 
+def test_the_interviewer_closes_a_finished_round_once(
+    client: TestClient, ctx: SimpleNamespace
+) -> None:
+    sid = _start(client)["id"]
+    for stage in (1, 2, 3, 4):
+        _write(client, sid, LRU.references[stage])
+        _run(client, sid)
+    ctx.anthropic_client = FakeAnthropic(_replies("Nice work. Push on lock striping next."))
+    url = f"/api/mock/sessions/{sid}/interviewer"
+    chat = client.post(url, json={"trigger": "stage_start"}).json()["chat"]
+    assert (chat[-1]["text"], chat[-1]["stage"]) == ("Nice work. Push on lock striping next.", 0)
+    prompt = ctx.anthropic_client.messages.calls[0]["messages"][0]["content"]
+    assert "Every stage is done. Close the round" in prompt
+    client.post(url, json={"trigger": "stage_start"})
+    assert len(ctx.anthropic_client.messages.calls) == 1
+
+
 def test_skipping_is_recorded_and_drops_that_stages_tests(
     client: TestClient, ctx: SimpleNamespace
 ) -> None:
@@ -273,6 +290,13 @@ def test_candidate_messages_get_replies_and_survive_a_failed_reply(
     assert res.status_code == 502
     chat = client.get(f"/api/mock/sessions/{sid}").json()["staged"]["chat"]
     assert chat[-1] == {**chat[-1], "role": "candidate", "text": "Unlinking needs prev."}
+    # Retrying without text replies to that message instead of repeating it.
+    ctx.anthropic_client = FakeAnthropic(_replies("Right, and the next pointer?"))
+    chat = client.post(url, json={"trigger": "message"}).json()["chat"]
+    texts = [m["text"] for m in chat[-2:]]
+    assert texts == ["Unlinking needs prev.", "Right, and the next pointer?"]
+    # With nothing to reply to, an empty message is refused.
+    assert client.post(url, json={"trigger": "message"}).status_code == 400
 
 
 def test_ending_closes_the_active_stage_and_grading_sees_the_round(
@@ -296,8 +320,8 @@ def test_ending_closes_the_active_stage_and_grading_sees_the_round(
     stage_2 = staged["stages"][1]
     assert stage_2["timeSpentS"] is not None and stage_2["design"]["verdict"] == "extended"
     assert {e["id"]: e["outcome"] for e in stage_2["edgeCases"]}["expired_but_present"] == "missed"
-    # Ended: every reached stage's edge cases show; locked ones stay hidden.
-    assert staged["stages"][2]["title"] is None
+    # Stages never reached stay hidden, edge cases included.
+    assert (staged["stages"][2]["title"], staged["stages"][2]["edgeCases"]) == (None, [])
     assert "Candidate: Starting with a hash map." in ended["transcript"]
     assert "Interviewer: Walk me through your get." in ended["transcript"]
     timeline_kinds = {e["kind"] for e in ended["events"]}

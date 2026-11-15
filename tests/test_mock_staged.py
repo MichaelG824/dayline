@@ -140,6 +140,8 @@ def test_design_change_ignores_whitespace_and_comments() -> None:
     change = staged.design_change(before, after)
     assert change is not None and change.kept == 1.0 and change.verdict == "extended"
     assert staged.design_change({}, after) is None
+    # Unchanged code (a stage skipped untouched) is not a design change at all.
+    assert staged.design_change(before, {"a.py": "x = 1\ny = 2\n"}) is None
 
 
 def test_round_record_reads_like_a_scorecard_input() -> None:
