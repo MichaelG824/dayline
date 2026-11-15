@@ -451,7 +451,8 @@ class MockSession:
     final_diff: str = ""
     # The last test run as the sandbox runner reported it (camelCase JSON).
     test_report: dict[str, Any] | None = None
-    # A built-in staged problem id (src/dayline/mock/staged_problems/<id>).
+    # A built-in staged problem id (src/dayline/mock/staged_problems/<id>),
+    # or a generated project's id (GeneratedProject.id).
     staged_problem_id: str | None = None
     stages: list[StageAttempt] = field(default_factory=list)
     created_at: datetime | None = None
@@ -493,6 +494,48 @@ class MockEvent:
     data: dict[str, Any] = field(default_factory=dict)
     id: str = ""
     at: datetime | None = None
+
+
+class GenerationStatus(StrEnum):
+    GENERATING = "generating"
+    READY = "ready"  # Validated in a sandbox; can be previewed and started.
+    FAILED = "failed"  # No validated project after every repair attempt.
+    CANCELLED = "cancelled"
+
+
+@dataclass(slots=True)
+class GeneratedProject:
+    """A full-stack practice project generated from the candidate's prompt
+    and imported context files (``mock/project_gen.py``), and the round it
+    becomes: a staged problem whose stage 1 is the task and stage 2 the
+    change request. Private to ``owner`` (the signed-in email).
+
+    ``request`` is the candidate's input (``{prompt, stack, difficulty,
+    durationMin, changeRequestMin, feedback}``); ``context_files`` the
+    imported files (``[{name, content}]``), only ever sent to the generator
+    model. ``artifact`` is the validated project (``project_gen.Artifact``'s
+    JSON), set once ``status`` is ``ready``. ``progress`` is the live phase
+    while generating (``{phase, attempt, detail}``), ``log`` what every
+    attempt did and why it failed (kept for debugging), and ``usage`` the
+    tokens every model call used (``{inputTokens, outputTokens,
+    cacheReadTokens, cacheWriteTokens, calls}``)."""
+
+    id: str
+    owner: str
+    request: dict[str, Any]
+    status: GenerationStatus = GenerationStatus.GENERATING
+    context_files: list[dict[str, str]] = field(default_factory=list)
+    title: str = ""
+    progress: dict[str, Any] = field(default_factory=dict)
+    artifact: dict[str, Any] | None = None
+    error: str = ""
+    log: list[dict[str, Any]] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=dict)
+    # The project this one regenerates; deleted once this one is ready.
+    parent_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(slots=True)

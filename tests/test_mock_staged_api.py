@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from dayline.adapters.generated_source import InMemoryGeneratedProjectSource
 from dayline.adapters.mock_source import InMemoryMockSource
 from dayline.adapters.sandbox import InMemorySandboxClient
 from dayline.adapters.task_source import InMemoryTaskSource
@@ -48,6 +49,7 @@ def ctx() -> SimpleNamespace:
     sandbox = InMemorySandboxClient()
     context = SimpleNamespace(
         task_source=InMemoryTaskSource(),
+        generated_source=InMemoryGeneratedProjectSource(),
         mock_source=InMemoryMockSource(rubrics=[small_rubric()]),
         anthropic_client=FakeAnthropic(_replies()),
         sandbox=sandbox,

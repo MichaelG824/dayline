@@ -31,6 +31,7 @@ from dayline.api.serializers import (
     staged_round_json,
     task_json,
 )
+from dayline.api.services.staged_problems import session_problem
 from dayline.mock import grader_model, mock_model, staged
 from dayline.mock.grader import GradeInput, GradingError, grade, weak_area_proposals
 from dayline.mock.ingest import ExtractionError, extract_questions, find_similar
@@ -360,21 +361,21 @@ def _get_session(ctx: AppContext, session_id: str) -> MockSession:
         raise _not_found("session", session_id) from exc
 
 
-def round_type_of(session: MockSession) -> MockRoundType | None:
+def round_type_of(ctx: AppContext, session: MockSession) -> MockRoundType | None:
     """The round type of a live session's template or staged problem."""
-    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+    problem = session_problem(ctx, session)
     if problem is not None:
         return problem.round_type
     template = builtin_templates().get(session.template_id or "")
     return template.round_type if template else None
 
 
-def assistant_enabled(session: MockSession) -> bool:
+def assistant_enabled(ctx: AppContext, session: MockSession) -> bool:
     """Whether the session's workspace has the AI assistant: live
     AI-assisted rounds only (``services/mock_assistant.py``)."""
     return (
         session.kind is MockSessionKind.LIVE
-        and round_type_of(session) is MockRoundType.AI_ASSISTED_PROJECT
+        and round_type_of(ctx, session) is MockRoundType.AI_ASSISTED_PROJECT
     )
 
 
@@ -401,7 +402,7 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
     if session.kind is MockSessionKind.LIVE:
         events = ctx.mock_source.list_events(session_id)
         template = builtin_templates().get(session.template_id or "")
-        problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+        problem = session_problem(ctx, session)
         detail |= {
             "templateTitle": template.title if template else None,
             "taskMd": template.task_md if template else "",
@@ -411,7 +412,7 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
             "finalDiff": session.final_diff,
             "events": [mock_event_json(e) for e in events],
             "staged": None,
-            "assistant": assistant_enabled(session),
+            "assistant": assistant_enabled(ctx, session),
         }
         if problem is not None:
             detail |= {
@@ -490,7 +491,7 @@ def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
 
     events = ctx.mock_source.list_events(session_id)
     work = work_record(session, events)
-    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+    problem = session_problem(ctx, session)
     if problem is not None:
         now = session.ended_at or datetime.now(UTC)
         work = f"{staged.round_record(problem, session.stages, now)}\n\n{work}"

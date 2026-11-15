@@ -28,6 +28,7 @@ from dayline.api.services.mock_live import (
     runner_errors,
     sandbox_client,
 )
+from dayline.api.services.staged_problems import find_problem, session_problem
 from dayline.mock import mock_model, staged
 from dayline.mock.interviewer import ChatMessage, InterviewerError, Trigger, interviewer_reply
 from dayline.mock.staged import StagedProblem
@@ -43,8 +44,8 @@ from dayline.models import (
 MAX_MESSAGE_CHARS = 4000
 
 
-def problem_of(session: MockSession) -> StagedProblem:
-    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+def problem_of(ctx: AppContext, session: MockSession) -> StagedProblem:
+    problem = session_problem(ctx, session)
     if problem is None:
         raise HTTPException(
             status_code=410, detail=f"The staged problem {session.staged_problem_id!r} is gone"
@@ -57,7 +58,7 @@ def _staged_session(ctx: AppContext, session_id: str) -> tuple[MockSession, Stag
     session = live_session(ctx, session_id)
     if not session.staged_problem_id:
         raise HTTPException(status_code=404, detail="Not a staged round")
-    return session, problem_of(session)
+    return session, problem_of(ctx, session)
 
 
 def round_json(ctx: AppContext, session: MockSession, problem: StagedProblem) -> dict[str, Any]:
@@ -75,7 +76,7 @@ def start_round(
     """Create the session and its sandbox with stage 1 active; returns the
     session id. If the sandbox cannot start, the session is not kept."""
     sandbox = sandbox_client(ctx)
-    problem = staged.builtin_staged_problems().get(problem_id)
+    problem = find_problem(ctx, problem_id)
     if problem is None:
         raise HTTPException(status_code=404, detail=f"No staged problem {problem_id!r}")
     check_session_refs(ctx, question_id, rubric_id, guideline_id)

@@ -35,6 +35,7 @@ _DEFAULT_TIMEOUT_S = 30.0
 _PREVIEW_TIMEOUT = httpx.Timeout(30.0, read=310.0)
 # The runner checks this against the sandbox's preview base (see preview.py there).
 PREVIEW_BASE_HEADER = "X-Dayline-Preview-Base"
+_PREVIEW_FETCH_CHARS = 64 * 1024
 
 
 class SandboxUnavailable(Exception):
@@ -146,6 +147,12 @@ class SandboxClient(Protocol):
         headers: list[tuple[str, str]],
         subprotocols: list[str],
     ) -> contextlib.AbstractAsyncContextManager[PreviewSocket]: ...
+
+    def fetch_preview(self, sandbox_id: str, base: str, port: int, path: str) -> tuple[int, str]:
+        """``GET`` one page from the dev server on ``port`` (blocking, for
+        checks outside a request): ``(status, body)``, the body cut at 64 KB.
+        A runner refusal raises :class:`SandboxRequestError`."""
+        ...
 
     def resume(self, sandbox_id: str) -> dict[str, Any]: ...
 
@@ -334,6 +341,23 @@ class RunnerSandboxClient:
             yield connection
         finally:
             await connection.close()
+
+    def fetch_preview(self, sandbox_id: str, base: str, port: int, path: str) -> tuple[int, str]:
+        try:
+            response = self._http.get(
+                self._preview_url(sandbox_id, port, path, ""),
+                headers={PREVIEW_BASE_HEADER: base, "Accept": "text/html"},
+                timeout=_PREVIEW_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            raise SandboxUnavailable(f"The sandbox runner is not reachable ({exc})") from exc
+        if response.headers.get("x-dayline-preview-error"):
+            try:
+                detail = str(response.json().get("detail") or response.text)
+            except ValueError:
+                detail = response.text
+            raise SandboxRequestError(response.status_code, detail)
+        return response.status_code, response.text[:_PREVIEW_FETCH_CHARS]
 
     def info(self, sandbox_id: str) -> dict[str, Any]:
         result: dict[str, Any] = self._request("GET", f"/sandboxes/{sandbox_id}")
@@ -623,6 +647,14 @@ class InMemorySandboxClient:
         socket.received.append(f"connect {path} {headers}")
         self.preview_sockets.append(socket)
         yield socket
+
+    def fetch_preview(self, sandbox_id: str, base: str, port: int, path: str) -> tuple[int, str]:
+        self._preview_box(sandbox_id, base, port)
+        request = {"port": port, "path": path, "method": "GET", "query": "", "headers": [],
+                   "body": b""}  # fmt: skip
+        self.preview_requests.append(request)
+        status, _headers, reply = self.preview_reply(request)
+        return status, reply.decode(errors="replace")[:_PREVIEW_FETCH_CHARS]
 
     def info(self, sandbox_id: str) -> dict[str, Any]:
         box = self._get(sandbox_id, running=False)

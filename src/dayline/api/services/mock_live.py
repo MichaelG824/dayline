@@ -31,6 +31,7 @@ from dayline.adapters.sandbox import (
 )
 from dayline.api.context import AppContext
 from dayline.api.services.mock import _get_session, check_session_refs
+from dayline.api.services.staged_problems import session_problem
 from dayline.mock import staged
 from dayline.mock.templates import builtin_templates
 from dayline.mock.worklog import chat_transcript, line_changes, repo_diff
@@ -92,11 +93,11 @@ def event(ctx: AppContext, session_id: str, kind: MockEventKind, **data: Any) ->
     ctx.mock_source.add_event(MockEvent(session_id=session_id, kind=kind, data=data))
 
 
-def starting_files(session: MockSession) -> dict[str, str] | None:
+def starting_files(ctx: AppContext, session: MockSession) -> dict[str, str] | None:
     """The files the session's sandbox started with (``None`` if its
     template or staged problem no longer exists)."""
     if session.staged_problem_id:
-        problem = staged.builtin_staged_problems().get(session.staged_problem_id)
+        problem = session_problem(ctx, session)
         return problem.starter if problem else None
     template = builtin_templates().get(session.template_id or "")
     return template.files if template else None
@@ -297,13 +298,13 @@ def end_session(ctx: AppContext, session_id: str) -> None:
             )
         )
 
-    start = starting_files(session)
+    start = starting_files(ctx, session)
     now = datetime.now(UTC)
     session.final_files = files
     session.final_diff = "" if lost or start is None else repo_diff(start, files)
     session.status = MockSessionStatus.ENDED
     session.ended_at = now
-    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+    problem = session_problem(ctx, session)
     if problem is not None:
         staged.close_round(session.stages, staged.solution_files(problem, files), now)
         # The interviewer chat is the round's transcript, for grading.

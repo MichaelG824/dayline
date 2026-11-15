@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from dayline.adapters.generated_source import InMemoryGeneratedProjectSource
 from dayline.adapters.mock_source import InMemoryMockSource
 from dayline.adapters.task_source import InMemoryTaskSource
 from dayline.api.auth import issue_session
@@ -38,6 +39,7 @@ ALLOWED = "owner@example.com"
 def ctx() -> SimpleNamespace:
     return SimpleNamespace(
         task_source=InMemoryTaskSource(),
+        generated_source=InMemoryGeneratedProjectSource(),
         mock_source=InMemoryMockSource(
             rubrics=[small_rubric()],
             guidelines=[MockGuideline(id="g1", name="Strict", body_md="Be strict.")],

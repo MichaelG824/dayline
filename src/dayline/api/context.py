@@ -37,6 +37,10 @@ from dayline.adapters.application_source import (  # noqa: E402
     SupabaseApplicationSource,
 )
 from dayline.adapters.calendar import GoogleCalendarClient, InMemoryCalendar  # noqa: E402
+from dayline.adapters.generated_source import (  # noqa: E402
+    GeneratedProjectSource,
+    SupabaseGeneratedProjectSource,
+)
 from dayline.adapters.interview_source import SupabaseInterviewSource  # noqa: E402
 from dayline.adapters.mock_source import SupabaseMockSource  # noqa: E402
 from dayline.adapters.problem_source import SupabaseProblemSource  # noqa: E402
@@ -63,6 +67,8 @@ class AppContext:
     interview_source: SupabaseInterviewSource
     problem_source: SupabaseProblemSource
     mock_source: SupabaseMockSource
+    # Generated full-stack practice projects (the Mock tab's generator).
+    generated_source: GeneratedProjectSource
     anthropic_client: anthropic.Anthropic
     # The sandbox runner for live mock sessions; None when SANDBOX_RUNNER_URL
     # is unset (live sessions are then unavailable, everything else works).
@@ -103,6 +109,7 @@ def build_context() -> AppContext:
         interview_source=SupabaseInterviewSource(client),
         problem_source=SupabaseProblemSource(client),
         mock_source=SupabaseMockSource(client),
+        generated_source=SupabaseGeneratedProjectSource(client),
         anthropic_client=anthropic.Anthropic(),
         sandbox=runner_from_env(),
         google_calendar=_google_calendar_from_env(),

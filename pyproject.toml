@@ -70,6 +70,10 @@ extend-exclude = ["src/dayline/mock/templates"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Fixture projects: other languages' source, kept as written.
+"tests/generated_projects/*" = ["E501"]
+
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src:sandbox/runner/src"
