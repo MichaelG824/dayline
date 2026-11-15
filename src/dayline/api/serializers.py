@@ -266,7 +266,11 @@ def mock_session_json(session: MockSession, scorecard: Scorecard | None) -> dict
 
 
 def mock_event_json(event: MockEvent) -> dict[str, Any]:
-    return {"kind": event.kind.value, "data": event.data, "at": _iso(event.at)}
+    data = event.data
+    if event.kind is MockEventKind.ASSISTANT_EDIT_PROPOSED:
+        # The full proposed file is only needed to apply it; the diff shows it.
+        data = {k: v for k, v in data.items() if k != "content"}
+    return {"kind": event.kind.value, "data": data, "at": _iso(event.at)}
 
 
 _CHAT_ROLES = {

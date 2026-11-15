@@ -471,6 +471,11 @@ class MockEventKind(StrEnum):
     # The interviewer chat: {"stage", "text"}, plus "trigger" for the interviewer.
     INTERVIEWER_MESSAGE = "interviewer_message"
     CANDIDATE_MESSAGE = "candidate_message"
+    # The in-session AI assistant (mock/assistant.py documents each shape).
+    ASSISTANT_PROMPT = "assistant_prompt"
+    ASSISTANT_RESPONSE = "assistant_response"
+    ASSISTANT_EDIT_PROPOSED = "assistant_edit_proposed"
+    ASSISTANT_EDIT_DECIDED = "assistant_edit_decided"
 
 
 @dataclass(slots=True)

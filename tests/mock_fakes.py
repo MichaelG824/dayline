@@ -3,7 +3,9 @@ a small rubric."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from dayline.models import MockRubric, RubricCriterion
@@ -26,18 +28,78 @@ class FakeText:
 @dataclass
 class FakeResponse:
     content: list[Any]
+    # Defaults to "tool_use" when there is a tool call, else "end_turn".
+    stop_reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.stop_reason:
+            calls = any(b.type == "tool_use" for b in self.content)
+            self.stop_reason = "tool_use" if calls else "end_turn"
+
+
+class FakeStream:
+    """What ``client.messages.stream(...)`` returns: a context manager that
+    iterates stream events (a text block's text arrives word by word) and
+    then hands over the whole message. ``before_event`` runs before each
+    event is yielded (tests use it to cancel mid-stream)."""
+
+    def __init__(self, response: FakeResponse, before_event: Any = None) -> None:
+        self._response = response
+        self._before_event = before_event
+        self.closed = False
+
+    def __enter__(self) -> FakeStream:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.closed = True
+
+    def __iter__(self) -> Iterator[Any]:
+        for block in self._response.content:
+            yield self._event(SimpleNamespace(type="content_block_start", content_block=block))
+            if block.type == "text":
+                words = block.text.split(" ")
+                for i, word in enumerate(words):
+                    text = word if i == len(words) - 1 else word + " "
+                    delta = SimpleNamespace(type="text_delta", text=text)
+                    yield self._event(SimpleNamespace(type="content_block_delta", delta=delta))
+            yield self._event(SimpleNamespace(type="content_block_stop"))
+
+    def _event(self, event: Any) -> Any:
+        if self._before_event is not None:
+            self._before_event(event)
+        return event
+
+    def get_final_message(self) -> FakeResponse:
+        return self._response
 
 
 @dataclass
 class FakeMessages:
-    """Returns the scripted responses in order and records every request."""
+    """Returns the scripted responses in order and records every request.
+    A scripted exception is raised instead of returned."""
 
-    responses: list[FakeResponse]
+    responses: list[Any]
     calls: list[dict[str, Any]] = field(default_factory=list)
+    before_event: Any = None
+    streams: list[FakeStream] = field(default_factory=list)
+
+    def _next(self, kwargs: dict[str, Any]) -> Any:
+        # A copy of the messages: callers keep appending to their list.
+        self.calls.append({**kwargs, "messages": list(kwargs.get("messages", []))})
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     def create(self, **kwargs: Any) -> FakeResponse:
-        self.calls.append(kwargs)
-        return self.responses.pop(0)
+        response: FakeResponse = self._next(kwargs)
+        return response
+
+    def stream(self, **kwargs: Any) -> FakeStream:
+        stream = FakeStream(self._next(kwargs), self.before_event)
+        self.streams.append(stream)
+        return stream
 
 
 @dataclass
