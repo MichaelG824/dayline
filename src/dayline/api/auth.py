@@ -23,8 +23,10 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import Receive, Scope, Send
 
 SESSION_COOKIE = "dayline_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
@@ -105,8 +107,25 @@ def cors_origins() -> list[str]:
     return origins
 
 
+# Live-session previews authenticate with the token in their path, since the
+# sandboxed app never sends the session cookie (services/mock_preview.py).
+_PUBLIC_PREFIXES = ("/api/preview/",)
+
+
 def is_public_path(path: str) -> bool:
-    return path in _PUBLIC_EXACT
+    return path in _PUBLIC_EXACT or path.startswith(_PUBLIC_PREFIXES)
+
+
+class AppCORSMiddleware(CORSMiddleware):
+    """CORS for Dayline's own pages, except the live preview: its sandboxed
+    app sends ``Origin: null``, and the preview answers that itself
+    (``services/mock_preview.py``)."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"].startswith(_PUBLIC_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 
 def issue_session(email: str, sub: str) -> str:

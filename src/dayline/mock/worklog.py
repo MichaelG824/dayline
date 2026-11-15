@@ -107,6 +107,11 @@ def _event_line(event: MockEvent, saves: int = 1) -> str:
         if d.get("decision") == "rejected":
             return f"rejected the AI assistant's edit to {path}"
         return f"tried to accept the AI assistant's edit to {path}, but the file had changed"
+    if event.kind is MockEventKind.SERVER_ACTION:
+        verb = {"start": "started", "stop": "stopped", "restart": "restarted"}
+        return f"{verb.get(d.get('action', ''), d.get('action'))} the {d.get('server')} dev server"
+    if event.kind is MockEventKind.PREVIEW_RELOADED:
+        return f"reloaded the {d.get('server')} preview"
     if event.kind is MockEventKind.SESSION_STARTED:
         return "session started"
     return "session ended"
