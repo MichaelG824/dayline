@@ -550,8 +550,9 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
         >
           &lsaquo; Practice
         </button>
-        <span className="h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
-        <h1 className="min-w-0 truncate text-sm font-medium">{session?.title ?? 'Loading…'}</h1>
+        {/* No room for the title on phones, next to every header button. */}
+        <span className="hidden sm:block h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
+        <h1 className="hidden sm:block min-w-0 truncate text-sm font-medium">{session?.title ?? 'Loading…'}</h1>
 
         <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
           {minutesLeft != null && minutesLeft <= 10 && sandbox?.state === 'running' && (
@@ -579,6 +580,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
                 setShowAssistant(opening);
                 setShowTask(false);
                 if (opening) setLastSide('assistant');
+                if (opening && !wideSide) setShowPreview(false);
               }}
               className={`${HEADER_BUTTON} ${assistantVisible ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}
               title="Your AI coding assistant: ask, plan, or edit"
@@ -606,9 +608,10 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
                 setShowPreview(opening);
                 setShowTask(false);
                 if (opening) setLastSide('preview');
+                if (opening && !wideSide) setShowAssistant(false);
               }}
               disabled={!sandboxRunning}
-              className={`${HEADER_BUTTON} inline-flex items-center gap-2 ${
+              className={`${HEADER_BUTTON} inline-flex items-center gap-1.5 sm:gap-2 ${
                 previewVisible ? 'bg-zinc-100 dark:bg-zinc-900' : ''
               }`}
               title="The running app"
@@ -638,7 +641,13 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
                 : undefined
             }
           >
-            {running ? 'Running…' : 'Run tests'}
+            {running ? (
+              'Running…'
+            ) : (
+              <>
+                Run<span className="hidden sm:inline"> tests</span>
+              </>
+            )}
           </button>
           <button
             onClick={() => void handleEnd()}
