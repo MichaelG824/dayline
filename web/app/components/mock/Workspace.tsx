@@ -29,6 +29,7 @@ import { FileNode, buildFileTree, formatClock, languageForPath } from '../../lib
 import { useIsDark } from '../../lib/useIsDark';
 import { languageExtensions } from '../problems/CodeEditor';
 import { MarkdownView } from '../problems/Markdown';
+import { AssistantPanel } from './AssistantPanel';
 import { StagePanel } from './StagePanel';
 import { TestResults, reportCounts } from './TestResults';
 import { ErrorText } from './ui';
@@ -97,6 +98,8 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
   // when it is already the open tab.
   const [panelClicks, setPanelClicks] = useState(0);
   const [showTask, setShowTask] = useState(true);
+  // The AI assistant (AI-assisted rounds); shares the side with the task.
+  const [showAssistant, setShowAssistant] = useState(false);
   const [staged, setStaged] = useState<StagedRound | null>(null);
   const [thinking, setThinking] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -293,6 +296,21 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
     await save();
     await openFile(path);
   }
+
+  // An accepted assistant edit was written: show it now rather than on the
+  // next poll.
+  const handleAssistantApplied = useCallback(
+    async (path: string) => {
+      try {
+        setFiles(await listWorkspaceFiles(sessionId));
+      } catch {
+        // The poll will catch up.
+      }
+      const current = openRef.current;
+      if (current?.path === path && current.content === current.saved) await openFile(path);
+    },
+    [sessionId, openFile],
+  );
 
   async function reloadFromDisk() {
     const file = openRef.current;
@@ -492,7 +510,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pt-[env(safe-area-inset-top,0px)]">
-      <header className="flex items-center gap-3 px-4 h-12 shrink-0 border-b border-zinc-200 dark:border-zinc-800">
+      <header className="flex items-center gap-2 sm:gap-3 px-4 h-12 shrink-0 border-b border-zinc-200 dark:border-zinc-800">
         <button
           onClick={onExit}
           className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white whitespace-nowrap"
@@ -503,7 +521,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
         <span className="h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
         <h1 className="min-w-0 truncate text-sm font-medium">{session?.title ?? 'Loading…'}</h1>
 
-        <div className="ml-auto flex items-center gap-2 sm:gap-3">
+        <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
           {minutesLeft != null && minutesLeft <= 10 && sandbox?.state === 'running' && (
             <span className="hidden md:inline text-xs text-amber-600 dark:text-amber-400 whitespace-nowrap">
               Sandbox stops in {Math.max(minutesLeft, 0)} min
@@ -522,8 +540,24 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
               ) : null}
             </span>
           )}
+          {session?.assistant && (
+            <button
+              onClick={() => {
+                setShowAssistant((v) => !v);
+                setShowTask(false);
+              }}
+              className={`${HEADER_BUTTON} ${showAssistant ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}
+              title="Your AI coding assistant: ask, plan, or edit"
+            >
+              <span className="sm:hidden">AI</span>
+              <span className="hidden sm:inline">Assistant</span>
+            </button>
+          )}
           <button
-            onClick={() => setShowTask((v) => !v)}
+            onClick={() => {
+              setShowTask((v) => !v);
+              setShowAssistant(false);
+            }}
             className={`${staged ? '' : 'hidden lg:inline-block'} ${HEADER_BUTTON} ${
               showTask ? 'bg-zinc-100 dark:bg-zinc-900' : ''
             }`}
@@ -551,7 +585,18 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
                 : 'bg-indigo-500 hover:bg-indigo-400 text-white'
             }`}
           >
-            {ending === 'ending' ? 'Ending…' : ending === 'confirm' ? 'Confirm end' : 'End session'}
+            {/* Short on phones, where the header is tight. */}
+            {ending === 'ending' ? (
+              'Ending…'
+            ) : ending === 'confirm' ? (
+              <>
+                Confirm<span className="hidden sm:inline"> end</span>
+              </>
+            ) : (
+              <>
+                End<span className="hidden sm:inline"> session</span>
+              </>
+            )}
           </button>
         </div>
       </header>
@@ -708,6 +753,28 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
               onSkip={() => void handleSkip()}
               onFinish={() => void handleFinish()}
               onClose={() => setShowTask(false)}
+            />
+          </aside>
+        )}
+        {session?.assistant && (
+          // Kept mounted while hidden, so a reply keeps streaming.
+          <aside
+            className={`${
+              showAssistant ? '' : 'hidden'
+            } absolute inset-0 z-10 sm:left-auto sm:w-[26rem] sm:border-l sm:shadow-xl lg:static lg:z-auto lg:shadow-none xl:w-[30rem] shrink-0 border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950`}
+          >
+            <AssistantPanel
+              sessionId={sessionId}
+              open={showAssistant}
+              enabled={sandboxRunning}
+              beforeSend={save}
+              onApplied={(path) => void handleAssistantApplied(path)}
+              onOpenFile={(path) => {
+                void switchTo(path);
+                // Below lg the panel covers the editor: get out of the way.
+                if (!window.matchMedia('(min-width: 1024px)').matches) setShowAssistant(false);
+              }}
+              onClose={() => setShowAssistant(false)}
             />
           </aside>
         )}

@@ -23,6 +23,7 @@ import {
   SECONDARY_BUTTON,
   SECTION_TITLE,
 } from './ui';
+import { DiffView } from './DiffView';
 import { GraderText } from './GraderText';
 import { StagedSummary } from './StagedSummary';
 import { TestResults } from './TestResults';
@@ -324,6 +325,13 @@ export function SessionView({
   );
 }
 
+const OFF_TIMELINE = new Set<MockEvent['kind']>([
+  'interviewer_message',
+  'candidate_message',
+  'assistant_response',
+  'assistant_edit_proposed',
+]);
+
 // One timeline line: an event, or a run of saves to the same file.
 interface TimelineEntry {
   event: MockEvent;
@@ -354,6 +362,17 @@ function eventText({ event, saves }: TimelineEntry): string {
       return `Interviewer: ${d.text}`;
     case 'candidate_message':
       return `You: ${d.text}`;
+    case 'assistant_prompt':
+      return `Asked the AI assistant (${d.mode}): ${d.text}`;
+    case 'assistant_edit_decided':
+      return d.decision === 'accepted'
+        ? `Accepted the AI assistant's edit to ${d.path}`
+        : d.decision === 'rejected'
+          ? `Rejected the AI assistant's edit to ${d.path}`
+          : `Tried to accept the AI assistant's edit to ${d.path}, but the file had changed`;
+    case 'assistant_response':
+    case 'assistant_edit_proposed':
+      return '';
   }
 }
 
@@ -381,21 +400,12 @@ function timelineEntries(events: MockEvent[]): TimelineEntry[] {
   return out;
 }
 
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'text-zinc-500 font-semibold';
-  if (line.startsWith('@@')) return 'text-indigo-600 dark:text-indigo-400';
-  if (line.startsWith('+')) return 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-300';
-  if (line.startsWith('-')) return 'bg-rose-50 dark:bg-rose-500/10 text-rose-800 dark:text-rose-300';
-  return 'text-zinc-600 dark:text-zinc-400';
-}
-
 // What a live session left behind: the last test run, the timeline, and the diff.
 function WorkRecord({ session }: { session: MockSessionDetail }) {
   const start = session.startedAt ? Date.parse(session.startedAt) : null;
-  // The interviewer chat is in the transcript, not the timeline.
-  const entries = timelineEntries(
-    (session.events ?? []).filter((e) => e.kind !== 'interviewer_message' && e.kind !== 'candidate_message'),
-  );
+  // The interviewer chat is in the transcript, not the timeline; the
+  // assistant's replies and drafts are summed up by its prompts and decisions.
+  const entries = timelineEntries((session.events ?? []).filter((e) => !OFF_TIMELINE.has(e.kind)));
   const clock = (at: string | null) => (start && at ? formatClock((Date.parse(at) - start) / 1000) : '');
   const diff = session.finalDiff ?? '';
   return (
@@ -436,13 +446,7 @@ function WorkRecord({ session }: { session: MockSessionDetail }) {
         <p className={SECTION_TITLE}>YOUR CHANGES</p>
         {diff.trim() ? (
           <div className={`${CARD} overflow-x-auto`}>
-            <pre className="py-2 text-xs font-mono">
-              {diff.replace(/\n$/, '').split('\n').map((line, i) => (
-                <div key={i} className={`px-4 whitespace-pre ${diffLineClass(line)}`}>
-                  {line || ' '}
-                </div>
-              ))}
-            </pre>
+            <DiffView diff={diff} />
           </div>
         ) : (
           <p className="text-sm text-zinc-500">No changes to the starting repo.</p>

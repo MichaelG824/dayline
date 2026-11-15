@@ -14,6 +14,9 @@ import os
 # Defaults are overridable per deploy without a code change.
 DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_GRADER_MODEL = "claude-opus-5-5"
+# The in-session assistant: Sonnet 4.5 on purpose (the captain's choice), as
+# closer to what companies hand candidates in AI-assisted rounds.
+DEFAULT_ASSISTANT_MODEL = "claude-sonnet-4-5"
 
 
 def mock_model() -> str:
@@ -24,3 +27,8 @@ def mock_model() -> str:
 def grader_model() -> str:
     """Model for grading: runs once per session, so it can be the strongest one."""
     return os.environ.get("MOCK_GRADER_MODEL", "").strip() or DEFAULT_GRADER_MODEL
+
+
+def assistant_model() -> str:
+    """Model for the coding assistant inside AI-assisted live sessions."""
+    return os.environ.get("MOCK_ASSISTANT_MODEL", "").strip() or DEFAULT_ASSISTANT_MODEL

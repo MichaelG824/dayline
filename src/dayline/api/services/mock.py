@@ -360,6 +360,24 @@ def _get_session(ctx: AppContext, session_id: str) -> MockSession:
         raise _not_found("session", session_id) from exc
 
 
+def round_type_of(session: MockSession) -> MockRoundType | None:
+    """The round type of a live session's template or staged problem."""
+    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+    if problem is not None:
+        return problem.round_type
+    template = builtin_templates().get(session.template_id or "")
+    return template.round_type if template else None
+
+
+def assistant_enabled(session: MockSession) -> bool:
+    """Whether the session's workspace has the AI assistant: live
+    AI-assisted rounds only (``services/mock_assistant.py``)."""
+    return (
+        session.kind is MockSessionKind.LIVE
+        and round_type_of(session) is MockRoundType.AI_ASSISTED_PROJECT
+    )
+
+
 def list_sessions(ctx: AppContext) -> list[dict[str, Any]]:
     cards = ctx.mock_source.latest_scorecards()
     return [mock_session_json(s, cards.get(s.id)) for s in ctx.mock_source.list_sessions()]
@@ -393,6 +411,7 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
             "finalDiff": session.final_diff,
             "events": [mock_event_json(e) for e in events],
             "staged": None,
+            "assistant": assistant_enabled(session),
         }
         if problem is not None:
             detail |= {

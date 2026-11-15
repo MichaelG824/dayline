@@ -1,6 +1,7 @@
 """What a candidate did in a live session, as text: the diff against the
 starting repo, line counts per save, a compact timeline plus final test
-results for the grader, and a staged round's interviewer chat as a transcript.
+results for the grader, a staged round's interviewer chat as a transcript,
+and a compact log of how the candidate used the AI assistant.
 
 Pure functions over models - no I/O.
 """
@@ -18,6 +19,14 @@ MAX_TIMELINE_LINES = 120
 MAX_FAILURES_SHOWN = 10
 # The interviewer chat: a transcript of its own, so not timeline lines.
 CHAT_KINDS = frozenset({MockEventKind.INTERVIEWER_MESSAGE, MockEventKind.CANDIDATE_MESSAGE})
+# Detailed in the AI-assistant log; the timeline keeps prompts and decisions.
+AI_DETAIL_KINDS = frozenset(
+    {MockEventKind.ASSISTANT_RESPONSE, MockEventKind.ASSISTANT_EDIT_PROPOSED}
+)
+MAX_AI_TURNS_SHOWN = 40
+MAX_AI_PROMPT_CHARS = 500
+MAX_AI_REPLY_CHARS = 400
+MAX_AI_TIMELINE_CHARS = 120
 
 
 def file_diff(path: str, before: str | None, after: str | None) -> str:
@@ -88,9 +97,24 @@ def _event_line(event: MockEvent, saves: int = 1) -> str:
         return f"passed stage {d.get('stage')}"
     if event.kind is MockEventKind.STAGE_SKIPPED:
         return f"skipped stage {d.get('stage')} without passing it"
+    if event.kind is MockEventKind.ASSISTANT_PROMPT:
+        text = _one_line(str(d.get("text", "")), MAX_AI_TIMELINE_CHARS)
+        return f'asked the AI assistant ({d.get("mode")} mode): "{text}"'
+    if event.kind is MockEventKind.ASSISTANT_EDIT_DECIDED:
+        path = d.get("path")
+        if d.get("decision") == "accepted":
+            return f"accepted the AI assistant's edit to {path}"
+        if d.get("decision") == "rejected":
+            return f"rejected the AI assistant's edit to {path}"
+        return f"tried to accept the AI assistant's edit to {path}, but the file had changed"
     if event.kind is MockEventKind.SESSION_STARTED:
         return "session started"
     return "session ended"
+
+
+def _one_line(text: str, limit: int) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 @dataclass(slots=True)
@@ -108,7 +132,7 @@ def timeline(events: list[MockEvent], start: datetime | None) -> list[str]:
     count) so autosave does not drown the record but the time spent shows."""
     entries: list[_Entry] = []
     for event in events:
-        if event.kind in CHAT_KINDS:
+        if event.kind in CHAT_KINDS or event.kind in AI_DETAIL_KINDS:
             continue
         last = entries[-1] if entries else None
         if (
@@ -149,6 +173,80 @@ def chat_transcript(events: list[MockEvent], start: datetime | None) -> str:
     return "\n".join(lines)
 
 
+def _seconds(ms: object) -> str:
+    return f"{int(ms) / 1000:.1f}s" if isinstance(ms, int | float) else "?"
+
+
+def ai_log(events: list[MockEvent], start: datetime | None) -> str:
+    """How the candidate used the AI assistant, turn by turn: the prompt and
+    mode, how long the reply took, what the assistant looked at, a cut of its
+    reply, and each proposed edit with what the candidate did about it and
+    how long they took to decide. Empty if the assistant was never used."""
+    prompts = [e for e in events if e.kind is MockEventKind.ASSISTANT_PROMPT]
+    if not prompts:
+        return ""
+    responses = {
+        e.data.get("turn"): e for e in events if e.kind is MockEventKind.ASSISTANT_RESPONSE
+    }
+    decisions: dict[object, list[MockEvent]] = {}
+    for e in events:
+        if e.kind is MockEventKind.ASSISTANT_EDIT_DECIDED:
+            decisions.setdefault(e.data.get("proposalId"), []).append(e)
+    proposals: dict[object, list[MockEvent]] = {}
+    for e in events:
+        if e.kind is MockEventKind.ASSISTANT_EDIT_PROPOSED:
+            proposals.setdefault(e.data.get("turn"), []).append(e)
+
+    modes = {m: sum(p.data.get("mode") == m for p in prompts) for m in ("ask", "plan", "edit")}
+    outcomes = {"accepted": 0, "rejected": 0, "conflict": 0, "never reviewed": 0}
+    blocks: list[list[str]] = []
+    for prompt in prompts:
+        turn = prompt.data.get("turn")
+        response = responses.get(turn)
+        r = response.data if response else {}
+        status = r.get("status", "interrupted")
+        head = f"[{_clock(prompt.at, start)}] {prompt.data.get('mode')} mode"
+        head += f", reply in {_seconds(r.get('durationMs'))}"
+        if status != "done":
+            head += f" ({status}{': ' + str(r['error']) if r.get('error') else ''})"
+        text = _one_line(str(prompt.data.get("text", "")), MAX_AI_PROMPT_CHARS)
+        block = [head, f"  Prompt: {text}"]
+        tools = [str(t) for t in r.get("tools", [])]
+        if tools:
+            block.append(f"  Looked at: {_one_line('; '.join(tools), MAX_AI_PROMPT_CHARS)}")
+        if r.get("text"):
+            block.append(f"  Reply: {_one_line(str(r['text']), MAX_AI_REPLY_CHARS)}")
+        for p in proposals.get(turn, []):
+            d = p.data
+            decided = decisions.get(d.get("proposalId"), [])
+            kinds = [x.data.get("decision") for x in decided]
+            if "accepted" in kinds:
+                outcome = "accepted"
+            else:
+                outcome = str(kinds[-1]) if kinds else "never reviewed"
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            final = next((x for x in decided if x.data.get("decision") == outcome), None)
+            after = f" after {_seconds(final.data.get('reviewMs'))}" if final else ""
+            label = "new file" if d.get("newFile") else "edit to"
+            block.append(
+                f"  Proposed {label} {d.get('path')} (+{d.get('added', 0)} -{d.get('removed', 0)})"
+                f": {_one_line(str(d.get('summary', '')), 160)} -> {outcome}{after}"
+            )
+        blocks.append(block)
+
+    lines = [line for block in blocks[-MAX_AI_TURNS_SHOWN:] for line in block]
+    if len(blocks) > MAX_AI_TURNS_SHOWN:
+        lines.insert(0, f"… {len(blocks) - MAX_AI_TURNS_SHOWN} earlier turns cut …")
+    proposed = sum(outcomes.values())
+    summary = (
+        f"{len(prompts)} prompts (ask {modes['ask']}, plan {modes['plan']}, "
+        f"edit {modes['edit']}); {proposed} edits proposed: {outcomes['accepted']} accepted, "
+        f"{outcomes['rejected']} rejected, {outcomes['conflict']} conflicted with the "
+        f"candidate's own changes, {outcomes['never reviewed']} never reviewed."
+    )
+    return summary + "\n\n" + "\n".join(lines)
+
+
 def tests_summary(report: dict[str, object] | None) -> str:
     if not report:
         return (
@@ -182,7 +280,9 @@ def work_record(session: MockSession, events: list[MockEvent]) -> str:
         "\n".join(timeline(events, session.started_at)) or "(no activity)",
         "## Tests",
         tests_summary(session.test_report),
-        "## Diff against the starting repo",
-        session.final_diff.strip() or "(no changes)",
     ]
+    assistant = ai_log(events, session.started_at)
+    if assistant:
+        parts += ["## AI assistant use", assistant]
+    parts += ["## Diff against the starting repo", session.final_diff.strip() or "(no changes)"]
     return "\n\n".join(parts)
