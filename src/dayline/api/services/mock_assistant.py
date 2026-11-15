@@ -51,11 +51,34 @@ from dayline.mock.assistant import (
 from dayline.models import MockEvent, MockEventKind, MockSession
 
 MAX_PROMPT_CHARS = 8000
+# A turn whose stream never started (the client left before the first frame)
+# never frees its session; after this long its slot is taken as abandoned.
+STALE_TURN_S = 15 * 60
 
-# Turns in flight: session id -> turn id, and the turn ids asked to stop.
+# Turns in flight: session id -> (turn id, start), and the turn ids asked to
+# stop. Guarded by ``_lock``.
 _lock = threading.Lock()
-_running: dict[str, str] = {}
+_running: dict[str, tuple[str, float]] = {}
 _cancelled: set[str] = set()
+
+
+def _current_turn(session_id: str) -> str | None:
+    """The session's turn in flight, if any. Call with ``_lock`` held."""
+    entry = _running.get(session_id)
+    if entry is None:
+        return None
+    turn_id, started = entry
+    if time.monotonic() - started > STALE_TURN_S:
+        del _running[session_id]
+        return None
+    return turn_id
+
+
+def _release(session_id: str, turn_id: str) -> None:
+    with _lock:
+        if _running.get(session_id, ("", 0.0))[0] == turn_id:
+            del _running[session_id]
+        _cancelled.discard(turn_id)
 
 
 def _session(ctx: AppContext, session_id: str) -> MockSession:
@@ -181,7 +204,7 @@ def _history(turns: list[dict[str, Any]]) -> list[PastTurn]:
 def state(ctx: AppContext, session_id: str) -> dict[str, Any]:
     _session(ctx, session_id)
     with _lock:
-        running = _running.get(session_id)
+        running = _current_turn(session_id)
     events = ctx.mock_source.list_events(session_id)
     turns = _turns(events, running and running.split(":")[1])
     return {"model": assistant_model(), "turns": turns, "running": running is not None}
@@ -249,16 +272,15 @@ def start_turn(ctx: AppContext, session_id: str, mode: str, prompt: str) -> Iter
     number = max((t["turn"] for t in turns), default=0) + 1
     turn_id = f"{uuid.uuid4()}:{number}"
     with _lock:
-        if session_id in _running:
+        if _current_turn(session_id) is not None:
             raise HTTPException(
                 status_code=409, detail="The assistant is still answering. Stop it or wait."
             )
-        _running[session_id] = turn_id
+        _running[session_id] = (turn_id, time.monotonic())
     try:
         event(ctx, session_id, MockEventKind.ASSISTANT_PROMPT, turn=number, mode=mode, text=text)
     except Exception:
-        with _lock:
-            _running.pop(session_id, None)
+        _release(session_id, turn_id)
         raise
     return _run_turn(
         ctx, session_id, workspace, turn_id, number, mode, text, _history(turns)
@@ -325,10 +347,10 @@ def _run_turn(
                 status="cancelled" if closed else "error",
                 error=None if closed else error,
             )
-        _record(ctx, session_id, number, mode, result, started, first_token_ms)
-        with _lock:
-            _running.pop(session_id, None)
-            _cancelled.discard(turn_id)
+        try:
+            _record(ctx, session_id, number, mode, result, started, first_token_ms)
+        finally:
+            _release(session_id, turn_id)
     if closed:
         return
     events = ctx.mock_source.list_events(session_id)
@@ -389,7 +411,7 @@ def cancel(ctx: AppContext, session_id: str, turn_id: str) -> None:
     written so far is kept, marked as stopped."""
     _session(ctx, session_id)
     with _lock:
-        if _running.get(session_id) == turn_id:
+        if _current_turn(session_id) == turn_id:
             _cancelled.add(turn_id)
 
 

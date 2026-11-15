@@ -58,6 +58,16 @@ A staged round is a live session (`kind = live`) with `MockSession.staged_proble
 - **Scores are computed in code** (`staged.score_round`): edge cases are "hit" only if they passed the stage's first run; design churn is the share of the previous stage's code lines kept (`REWRITE_THRESHOLD`). The interviewer (`mock/interviewer.py`, `MOCK_MODEL`) only talks; it never changes round state. Notes, hidden tests, and locked stages never reach the client (`serializers.staged_round_json`).
 - Changing `sandbox/` (packs included) means re-running `deploy/sandbox-vm/setup.sh`; an older runner answers hidden-test runs with a 501 "redeploy" error.
 
+## In-session AI assistant (AI-assisted live rounds)
+
+Live sessions whose template or staged problem has `round_type = "AI-assisted project"` get a coding assistant (`mock/assistant.py`, wired in `api/services/mock_assistant.py`; `services/mock.assistant_enabled` decides).
+Model: `MOCK_ASSISTANT_MODEL`, default `claude-sonnet-4-5` on purpose (the captain's choice, not a stale default).
+
+- **No mode writes.** Ask and plan get read-only tools; edit adds `propose_edit`, which only drafts a full new file plus the version it was based on. The only write is `POST .../assistant/edits/{id}` with `accept`, through `mock_live.write_file`, and only if the file is still at that version (otherwise the edit is recorded as `conflict`).
+- **The conversation lives in `mock_session_events`** (`assistant_prompt` / `assistant_response` / `assistant_edit_proposed` / `assistant_edit_decided`; shapes in the module docstring), so no migration and it survives restarts. The model gets earlier turns back as text only. `serializers.mock_event_json` strips the proposed file content; `worklog.ai_log` is the grader's compact view.
+- A turn in flight is tracked in process memory (one per session) for cancelling; the client also drops the connection after a grace period, which the stream records as stopped.
+- Opt-in real-model test: `RUN_MODEL_TESTS=1 uv run pytest tests/test_mock_assistant_model.py`.
+
 ## Auth and production host
 
 Google sign-in is the ownership proof; `ALLOWED_EMAIL` is the only account that may use the app (`api/auth.py`). If it is unset, nobody is allowlisted.

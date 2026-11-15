@@ -9,6 +9,7 @@ a scripted Anthropic client, signed in as the allowlisted account.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -240,7 +241,7 @@ def test_one_turn_at_a_time_and_cancel_only_hits_the_running_turn(
     client: TestClient, ctx: SimpleNamespace
 ) -> None:
     session_id = _start(client)
-    mock_assistant._running[session_id] = "other:1"
+    mock_assistant._running[session_id] = ("other:1", time.monotonic())
     try:
         res = client.post(
             f"/api/mock/sessions/{session_id}/assistant/turns", json={"mode": "ask", "prompt": "x"}
@@ -257,6 +258,19 @@ def test_one_turn_at_a_time_and_cancel_only_hits_the_running_turn(
         mock_assistant._cancelled.discard("other:1")
 
 
+def test_an_abandoned_turn_frees_the_session_after_a_while(
+    client: TestClient, messages: FakeMessages
+) -> None:
+    """A turn whose stream never started never releases its slot itself."""
+    session_id = _start(client)
+    started = time.monotonic() - mock_assistant.STALE_TURN_S - 1
+    mock_assistant._running[session_id] = ("abandoned:1", started)
+    assert not client.get(f"/api/mock/sessions/{session_id}/assistant").json()["running"]
+    messages.responses.append(FakeResponse([FakeText("Hi.")]))
+    assert _turn(client, session_id, "ask", "hi")[-1]["type"] == "done"
+    assert session_id not in mock_assistant._running
+
+
 def test_cancelling_keeps_the_partial_reply_marked_as_stopped(
     client: TestClient, ctx: SimpleNamespace, messages: FakeMessages
 ) -> None:
@@ -264,7 +278,7 @@ def test_cancelling_keeps_the_partial_reply_marked_as_stopped(
 
     def cancel_on_second_word(event: Any) -> None:
         if event.type == "content_block_delta" and event.delta.text == "two ":
-            mock_assistant._cancelled.add(mock_assistant._running[session_id])
+            mock_assistant._cancelled.add(mock_assistant._running[session_id][0])
 
     messages.before_event = cancel_on_second_word
     messages.responses.append(FakeResponse([FakeText("one two three")]))

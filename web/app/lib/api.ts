@@ -143,7 +143,7 @@ export class ApiError extends Error {
   }
 }
 
-async function checkOk(res: Response, message: string): Promise<Response> {
+export async function checkOk(res: Response, message: string): Promise<Response> {
   if (res.status === 401 || res.status === 403) {
     redirectForAuth(res.status);
   }
@@ -160,7 +160,7 @@ async function checkOk(res: Response, message: string): Promise<Response> {
   return res;
 }
 
-function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   return fetch(`${API}${path}`, {
     ...init,
@@ -557,7 +557,7 @@ export interface ProblemTagInput {
   color: string | null;
 }
 
-function jsonInit(method: string, body: unknown): RequestInit {
+export function jsonInit(method: string, body: unknown): RequestInit {
   return {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -791,6 +791,8 @@ export interface MockSessionDetail extends MockSessionSummary {
   events?: MockEvent[];
   // Staged rounds only.
   staged?: StagedRound | null;
+  // Whether the workspace has the AI assistant (AI-assisted live rounds).
+  assistant?: boolean;
 }
 
 // Live sessions (a sandbox per session). Mirrors services/mock_live.py and
@@ -889,7 +891,11 @@ export interface MockEvent {
     | 'stage_passed'
     | 'stage_skipped'
     | 'interviewer_message'
-    | 'candidate_message';
+    | 'candidate_message'
+    | 'assistant_prompt'
+    | 'assistant_response'
+    | 'assistant_edit_proposed'
+    | 'assistant_edit_decided';
   data: Record<string, unknown>;
   at: string | null;
 }
