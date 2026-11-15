@@ -17,6 +17,13 @@ A staged problem is content, not code - one folder under
         tests.py          hidden tests, run in the sandbox and never shown
     reference/stage_<n>.py  a solution as it stands after stage n (for tests)
 
+Generated full-stack problems (``mock/project_gen.py``) are stored per user
+in the database instead and become the same :class:`StagedProblem` (stage 1
+is the task, stage 2 the change request). Their hidden tests are files in
+the stack's test language, so which JUnit cases belong to which stage cannot
+be read off the source; validation records them (``Stage.cases``) from real
+runs instead.
+
 Everything below the loader is pure: which hidden tests a run includes, how a
 run moves the round on, and the per-stage scores.
 """
@@ -65,17 +72,41 @@ class Stage:
     target_min: int
     prompt_md: str
     notes_md: str
-    tests: str  # The hidden test file's source.
+    # The hidden test files, by path inside the runner's hidden-tests folder.
+    tests: dict[str, str]
     edge_cases: tuple[EdgeCase, ...] = ()
+    # Generated problems: every hidden test case as (JUnit classname, name),
+    # recorded when the problem was validated. Empty for built-in (pytest)
+    # stages, whose cases are matched by module name instead.
+    cases: frozenset[tuple[str, str]] = frozenset()
+    # Generated problems: when the stage unlocks, in minutes into the round
+    # (the change request's time; stage 1 starts at 0). Unused until timed
+    # unlocks exist.
+    unlock_min: int | None = None
 
     @property
     def test_module(self) -> str:
-        """The hidden test file's module name; JUnit classnames start with it."""
+        """A built-in stage's hidden test module; JUnit classnames start with it."""
         return f"test_stage_{self.number}_{self.slug.replace('-', '_')}"
 
     @property
     def test_names(self) -> frozenset[str]:
-        return frozenset(_TEST_DEF.findall(self.tests))
+        if self.cases:
+            return frozenset(name for _, name in self.cases)
+        return frozenset(name for src in self.tests.values() for name in _TEST_DEF.findall(src))
+
+    def owns(self, case: dict[str, Any]) -> bool:
+        """Whether a JUnit case from a hidden test run is one of this stage's."""
+        classname = str(case.get("classname") or "")
+        if self.cases:
+            return (classname, str(case.get("name") or "")) in self.cases
+        return classname.split(".")[0] == self.test_module
+
+    def case_name(self, case: dict[str, Any]) -> str:
+        """The test a case reports on: a parametrized pytest case counts
+        toward its function; recorded names are kept whole."""
+        name = str(case.get("name") or "")
+        return name if self.cases else name.split("[")[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +123,8 @@ class StagedProblem:
     starter: dict[str, str] = field(default_factory=dict)
     # Stage number -> the reference solution file after that stage.
     references: dict[int, str] = field(default_factory=dict)
+    # Generated problems: what the grader should look for in this round.
+    analysis_hints: tuple[str, ...] = ()
 
     @property
     def overview_md(self) -> str:
@@ -114,6 +147,7 @@ def _read_tree(root: Path) -> dict[str, str]:
 def _load_stage(folder: Path, number: int, slug: str) -> Stage:
     where = f"{folder.parent.parent.name}/stages/{folder.name}"
     meta = tomllib.loads((folder / "stage.toml").read_text())
+    module = f"test_stage_{number}_{slug.replace('-', '_')}"
     stage = Stage(
         number=number,
         slug=slug,
@@ -121,7 +155,7 @@ def _load_stage(folder: Path, number: int, slug: str) -> Stage:
         target_min=int(meta["target_min"]),
         prompt_md=(folder / "prompt.md").read_text(),
         notes_md=(folder / "notes.md").read_text(),
-        tests=(folder / "tests.py").read_text(),
+        tests={f"{module}.py": (folder / "tests.py").read_text()},
         edge_cases=tuple(
             EdgeCase(id=str(e["id"]), title=str(e["title"]), tests=tuple(e["tests"]))
             for e in meta.get("edge_cases", [])
@@ -205,15 +239,15 @@ def hidden_files(problem: StagedProblem, stages: list[StageAttempt]) -> dict[str
     stage's (so a later stage cannot quietly break an earlier one). Skipped
     stages are left out - their features may never have been written."""
     return {
-        f"{stage.test_module}.py": stage.tests
+        path: source
         for stage, attempt in zip(problem.stages, stages, strict=True)
         if attempt.status in (StageStatus.ACTIVE, StageStatus.PASSED)
+        for path, source in stage.tests.items()
     }
 
 
 def _case_stage(problem: StagedProblem, case: dict[str, Any]) -> Stage | None:
-    module = str(case.get("classname") or "").split(".")[0]
-    return next((s for s in problem.stages if s.test_module == module), None)
+    return next((s for s in problem.stages if s.owns(case)), None)
 
 
 _OUTCOME_RANK = {"passed": 0, "skipped": 1, "failed": 2, "error": 3}
@@ -229,7 +263,7 @@ def stage_outcomes(
     for case in cases if isinstance(cases, list) else []:
         if not isinstance(case, dict) or _case_stage(problem, case) is not stage:
             continue
-        name = str(case.get("name") or "").split("[")[0]
+        name = stage.case_name(case)
         outcome = str(case.get("outcome") or "error")
         if _OUTCOME_RANK.get(outcome, 3) >= _OUTCOME_RANK.get(outcomes.get(name, "passed"), 3):
             outcomes[name] = outcome

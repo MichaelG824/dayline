@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from dayline.adapters.generated_source import InMemoryGeneratedProjectSource
 from dayline.adapters.mock_source import InMemoryMockSource
 from dayline.adapters.sandbox import InMemorySandboxClient
 from dayline.adapters.task_source import InMemoryTaskSource
@@ -34,6 +35,7 @@ SERVICE = "library/service.py"
 def ctx() -> SimpleNamespace:
     return SimpleNamespace(
         task_source=InMemoryTaskSource(),
+        generated_source=InMemoryGeneratedProjectSource(),
         mock_source=InMemoryMockSource(rubrics=[small_rubric()]),
         anthropic_client=FakeAnthropic(FakeMessages([])),
         sandbox=InMemorySandboxClient(),

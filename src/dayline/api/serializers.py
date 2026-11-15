@@ -16,6 +16,8 @@ from dayline.adapters.task_source import SupabaseTaskSource
 from dayline.mock.staged import StagedProblem, active_index, score_round
 from dayline.models import (
     Application,
+    GeneratedProject,
+    GenerationStatus,
     Interview,
     MockEvent,
     MockEventKind,
@@ -336,3 +338,59 @@ def staged_round_json(
         "stages": stages,
         "chat": chat_json(events),
     }
+
+
+def generated_project_json(project: GeneratedProject, detail: bool = True) -> dict[str, Any]:
+    """A generated project as the candidate sees it before the round. The
+    hidden tests, reference solutions, interviewer notes and grader hints
+    never leave the server; the change request's prompt is sent, and the
+    client keeps it behind a reveal toggle. The attempt log is only shown
+    for a generation that did not produce a project."""
+    request = project.request
+    artifact = project.artifact or {}
+    data: dict[str, Any] = {
+        "id": project.id,
+        "status": project.status.value,
+        "title": project.title,
+        "summary": artifact.get("summary", ""),
+        "stack": request.get("stack"),
+        "difficulty": request.get("difficulty"),
+        "durationMin": request.get("durationMin"),
+        "changeRequestMin": request.get("changeRequestMin"),
+        "prompt": request.get("prompt", ""),
+        "progress": project.progress,
+        "error": project.error,
+        "createdAt": _iso(project.created_at),
+        "finishedAt": _iso(project.finished_at),
+    }
+    if not detail:
+        return data
+    data |= {
+        "feedback": request.get("feedback", ""),
+        "contextFiles": [
+            {"name": f["name"], "bytes": len(f["content"].encode())} for f in project.context_files
+        ],
+        "usage": project.usage,
+        "log": project.log
+        if project.status in (GenerationStatus.FAILED, GenerationStatus.CANCELLED)
+        else [],
+        "project": None,
+    }
+    if project.status is GenerationStatus.READY and artifact:
+        task, change = artifact["task"], artifact["changeRequest"]
+        data["project"] = {
+            "openPath": artifact["openPath"],
+            "files": artifact["files"],
+            "task": {
+                "title": task["title"],
+                "promptMd": task["promptMd"],
+                "targetMin": task["targetMin"],
+            },
+            "changeRequest": {
+                "title": change["title"],
+                "promptMd": change["promptMd"],
+                "targetMin": change["targetMin"],
+                "atMin": artifact["changeRequestMin"],
+            },
+        }
+    return data

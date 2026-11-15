@@ -17,6 +17,7 @@ import {
   endLiveSession,
   getMockSession,
   getPreviewStatus,
+  sessionPreviewApi,
   getSandboxStatus,
   interviewerTurn,
   listWorkspaceFiles,
@@ -32,6 +33,7 @@ import { useIsDark } from '../../lib/useIsDark';
 import { languageExtensions } from '../problems/CodeEditor';
 import { MarkdownView } from '../problems/Markdown';
 import { AssistantPanel } from './AssistantPanel';
+import { FileTree } from './FileTree';
 import { PreviewPane } from './PreviewPane';
 import { StagePanel } from './StagePanel';
 import { TestResults, reportCounts } from './TestResults';
@@ -156,6 +158,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
     [setOpen],
   );
 
+  const previewApi = useMemo(() => sessionPreviewApi(sessionId), [sessionId]);
   const sandboxRunning = sandbox?.state === 'running';
   const hasServers = (preview?.servers.length ?? 0) > 0;
   const assistantVisible = showAssistant && (wideSide || !showPreview || lastSide === 'assistant');
@@ -687,7 +690,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
         <aside className="hidden md:flex w-56 shrink-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
           <p className="px-4 pt-3 pb-2 font-mono text-xs tracking-widest text-zinc-500">FILES</p>
           <nav className="flex-1 overflow-y-auto pb-3 text-sm">
-            <Tree nodes={tree} depth={0} openPath={open?.path ?? null} onOpen={(p) => void switchTo(p)} />
+            <FileTree nodes={tree} openPath={open?.path ?? null} onOpen={(p) => void switchTo(p)} />
           </nav>
         </aside>
 
@@ -816,7 +819,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
             }`}
           >
             <PreviewPane
-              sessionId={sessionId}
+              api={previewApi}
               initial={preview}
               onStatus={setPreview}
               onClose={() => setShowPreview(false)}
@@ -875,51 +878,6 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
         )}
       </div>
     </div>
-  );
-}
-
-function Tree({
-  nodes,
-  depth,
-  openPath,
-  onOpen,
-}: {
-  nodes: FileNode[];
-  depth: number;
-  openPath: string | null;
-  onOpen: (path: string) => void;
-}) {
-  return (
-    <ul>
-      {nodes.map((node) => (
-        <li key={node.path}>
-          {node.children ? (
-            <>
-              <p
-                className="py-1 pr-3 font-mono text-xs text-zinc-500 truncate"
-                style={{ paddingLeft: `${1 + depth * 0.75}rem` }}
-              >
-                {node.name}/
-              </p>
-              <Tree nodes={node.children} depth={depth + 1} openPath={openPath} onOpen={onOpen} />
-            </>
-          ) : (
-            <button
-              onClick={() => onOpen(node.path)}
-              className={`block w-full text-left py-1 pr-3 font-mono text-xs truncate ${
-                node.path === openPath
-                  ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300'
-                  : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900'
-              }`}
-              style={{ paddingLeft: `${1 + depth * 0.75}rem` }}
-              title={node.path}
-            >
-              {node.name}
-            </button>
-          )}
-        </li>
-      ))}
-    </ul>
   );
 }
 

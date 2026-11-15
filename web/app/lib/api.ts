@@ -1230,3 +1230,187 @@ export function previewUrl(base: string, port: number, path = '/'): string {
   const suffix = path === '/' || path === '' ? '' : path.startsWith('/') ? path : `/${path}`;
   return `${API}${base}/${port}${suffix}`;
 }
+
+// Where a preview pane gets its dev servers: a live session's sandbox, or a
+// generated project's preview sandbox (same shapes either way).
+export interface PreviewApi {
+  status: () => Promise<PreviewStatus>;
+  action: (server: string, action: ServerAction) => Promise<PreviewStatus>;
+  logs: (server: string, since: number) => Promise<ServerLogs>;
+  // For the session record; generated previews have none.
+  reloaded?: (server: string) => void;
+}
+
+export function sessionPreviewApi(sessionId: string): PreviewApi {
+  return {
+    status: () => getPreviewStatus(sessionId),
+    action: (server, action) => devServerAction(sessionId, server, action),
+    logs: (server, since) => getServerLogs(sessionId, server, since),
+    reloaded: (server) => void notePreviewReloaded(sessionId, server),
+  };
+}
+
+// Generated full-stack practice projects (dayline.api.services.mock_generate).
+// Generation runs on the server for a few minutes; follow it with
+// getGeneratedProject's long poll.
+export type GenerationStatus = 'generating' | 'ready' | 'failed' | 'cancelled';
+export type GenerationPhase =
+  | 'writing'
+  | 'repairing'
+  | 'checking_dependencies'
+  | 'booting'
+  | 'running_tests'
+  | 'ready';
+export type GeneratedStack = 'next-nest' | 'rails';
+export type Difficulty = 'easy' | 'medium' | 'hard';
+
+export interface GenerationProgress {
+  phase?: GenerationPhase;
+  // 0 for the first draft, N for repair N.
+  attempt?: number;
+  detail?: string;
+}
+
+export interface GeneratedProjectSummary {
+  id: string;
+  status: GenerationStatus;
+  title: string;
+  summary: string;
+  stack: GeneratedStack;
+  difficulty: Difficulty;
+  durationMin: number;
+  changeRequestMin: number;
+  prompt: string;
+  progress: GenerationProgress;
+  error: string;
+  createdAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface GenerationLogEntry {
+  at: string;
+  attempt: number;
+  kind: string;
+  message: string;
+}
+
+export interface GeneratedStagePrompt {
+  title: string;
+  promptMd: string;
+  targetMin: number;
+}
+
+export interface GeneratedProject extends GeneratedProjectSummary {
+  // Bumped as progress moves while the worker runs here; null otherwise.
+  version: number | null;
+  feedback: string;
+  contextFiles: { name: string; bytes: number }[];
+  // Tokens across every model call this generation made.
+  usage: Partial<
+    Record<'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'calls', number>
+  >;
+  // Only for a generation that produced nothing.
+  log: GenerationLogEntry[];
+  // Set once ready. Hidden tests, references and interviewer notes never reach the client.
+  project: {
+    openPath: string;
+    files: Record<string, string>;
+    task: GeneratedStagePrompt;
+    changeRequest: GeneratedStagePrompt & { atMin: number };
+  } | null;
+}
+
+export interface GenerateInput {
+  prompt: string;
+  stack: GeneratedStack;
+  difficulty: Difficulty;
+  durationMin: number;
+  changeRequestMin: number;
+  contextFiles: { name: string; content: string }[];
+}
+
+export interface GeneratedPreviewStatus extends PreviewStatus {
+  // none: no preview sandbox yet.
+  state: 'none' | 'running' | 'stopped';
+}
+
+const GENERATED = '/api/mock/generated';
+
+export async function getGeneratedProjects(): Promise<GeneratedProjectSummary[]> {
+  const res = await apiFetch(GENERATED);
+  return (await checkOk(res, 'Could not load generated projects')).json();
+}
+
+export async function createGeneratedProject(input: GenerateInput): Promise<GeneratedProject> {
+  const res = await apiFetch(GENERATED, jsonInit('POST', input));
+  return (await checkOk(res, 'Could not start generating')).json();
+}
+
+// With `since` (the last version seen) it is a long poll: it answers once
+// the progress moves on, or after `waitS` seconds.
+export async function getGeneratedProject(
+  id: string,
+  since?: { version: number; waitS: number },
+  signal?: AbortSignal,
+): Promise<GeneratedProject> {
+  const query = since ? `?version=${since.version}&wait=${since.waitS}` : '';
+  const res = await apiFetch(`${GENERATED}/${id}${query}`, { signal });
+  return (await checkOk(res, 'Could not load the project')).json();
+}
+
+export async function cancelGeneratedProject(id: string): Promise<GeneratedProject> {
+  const res = await apiFetch(`${GENERATED}/${id}/cancel`, { method: 'POST' });
+  return (await checkOk(res, 'Could not cancel')).json();
+}
+
+export async function regenerateProject(id: string, feedback: string): Promise<GeneratedProject> {
+  const res = await apiFetch(`${GENERATED}/${id}/regenerate`, jsonInit('POST', { feedback }));
+  return (await checkOk(res, 'Could not regenerate')).json();
+}
+
+export async function deleteGeneratedProject(id: string): Promise<void> {
+  const res = await apiFetch(`${GENERATED}/${id}`, { method: 'DELETE' });
+  await checkOk(res, 'Could not delete the project');
+}
+
+export async function getGeneratedPreview(id: string): Promise<GeneratedPreviewStatus> {
+  const res = await apiFetch(`${GENERATED}/${id}/preview`);
+  return (await checkOk(res, 'Could not load the preview')).json();
+}
+
+export async function startGeneratedPreview(id: string): Promise<GeneratedPreviewStatus> {
+  const res = await apiFetch(`${GENERATED}/${id}/preview`, { method: 'POST' });
+  return (await checkOk(res, 'Could not start the app')).json();
+}
+
+// Frees the runner slot; fine to lose (the runner stops idle sandboxes).
+export function stopGeneratedPreview(id: string): void {
+  void apiFetch(`${GENERATED}/${id}/preview`, { method: 'DELETE', keepalive: true }).catch(() => undefined);
+}
+
+export function generatedPreviewApi(id: string): PreviewApi {
+  return {
+    status: () => getGeneratedPreview(id),
+    action: async (server, action) => {
+      const res = await apiFetch(
+        `${GENERATED}/${id}/servers/${encodeURIComponent(server)}/${action}`,
+        { method: 'POST' },
+      );
+      return (await checkOk(res, `Could not ${action} ${server}`)).json();
+    },
+    logs: async (server, since) => {
+      const res = await apiFetch(
+        `${GENERATED}/${id}/servers/${encodeURIComponent(server)}/logs?since=${since}`,
+      );
+      return (await checkOk(res, 'Could not load the logs')).json();
+    },
+  };
+}
+
+export async function startGeneratedRound(
+  id: string,
+  refs: { questionId: string | null; rubricId: string | null; guidelineId: string | null },
+): Promise<MockSessionDetail> {
+  const res = await apiFetch(`${GENERATED}/${id}/start`, jsonInit('POST', refs));
+  return (await checkOk(res, 'Could not start the round')).json();
+}

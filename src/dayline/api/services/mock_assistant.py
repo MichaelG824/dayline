@@ -85,7 +85,7 @@ def _release(session_id: str, turn_id: str) -> None:
 def _session(ctx: AppContext, session_id: str) -> MockSession:
     """A live session that has the assistant, or a 404/409."""
     session = live_session(ctx, session_id)
-    if not assistant_enabled(session):
+    if not assistant_enabled(ctx, session):
         raise HTTPException(status_code=404, detail="This round has no AI assistant")
     return session
 

@@ -19,6 +19,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from dayline.adapters.generated_source import InMemoryGeneratedProjectSource
 from dayline.adapters.mock_source import InMemoryMockSource
 from dayline.adapters.sandbox import InMemorySandboxClient
 from dayline.adapters.task_source import InMemoryTaskSource
@@ -48,6 +49,7 @@ def messages() -> FakeMessages:
 def ctx(messages: FakeMessages) -> SimpleNamespace:
     return SimpleNamespace(
         task_source=InMemoryTaskSource(),
+        generated_source=InMemoryGeneratedProjectSource(),
         mock_source=InMemoryMockSource(),
         anthropic_client=FakeAnthropic(messages),
         sandbox=InMemorySandboxClient(),

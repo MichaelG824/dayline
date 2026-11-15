@@ -1,5 +1,5 @@
 """Mock-interview logic: question ingest, grading, live-session work records,
-and staged rounds with their interviewer.
+staged rounds with their interviewer, and generated full-stack projects.
 
 Nothing here imports FastAPI or Supabase. Each module takes an Anthropic client
 and plain domain objects, so it is testable with a fake client (see
@@ -17,6 +17,9 @@ DEFAULT_GRADER_MODEL = "claude-opus-5-5"
 # The in-session assistant: Sonnet 4.5 on purpose (the captain's choice), as
 # closer to what companies hand candidates in AI-assisted rounds.
 DEFAULT_ASSISTANT_MODEL = "claude-sonnet-4-5"
+# The project generator: the strongest current Sonnet, fast enough for a
+# draft in a couple of minutes.
+DEFAULT_GENERATOR_MODEL = "claude-sonnet-5-5"
 
 
 def mock_model() -> str:
@@ -32,3 +35,8 @@ def grader_model() -> str:
 def assistant_model() -> str:
     """Model for the coding assistant inside AI-assisted live sessions."""
     return os.environ.get("MOCK_ASSISTANT_MODEL", "").strip() or DEFAULT_ASSISTANT_MODEL
+
+
+def generator_model() -> str:
+    """Model that writes generated full-stack practice projects."""
+    return os.environ.get("MOCK_GENERATOR_MODEL", "").strip() or DEFAULT_GENERATOR_MODEL
