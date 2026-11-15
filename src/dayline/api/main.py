@@ -46,6 +46,7 @@ from dayline.api.controllers import (
     interviews,
     mock,
     mock_live,
+    mock_staged,
     outcomes,
     plan,
     preferences,
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
         problems,
         mock,
         mock_live,
+        mock_staged,
     ):
         app.include_router(controller.router)
 

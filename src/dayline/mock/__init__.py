@@ -1,5 +1,5 @@
-"""Mock-interview logic: question ingest, grading (and, in later phases, the
-repo generator and live interviewer).
+"""Mock-interview logic: question ingest, grading, live-session work records,
+and staged rounds with their interviewer.
 
 Nothing here imports FastAPI or Supabase. Each module takes an Anthropic client
 and plain domain objects, so it is testable with a fake client (see
@@ -17,7 +17,7 @@ DEFAULT_GRADER_MODEL = "claude-opus-5-5"
 
 
 def mock_model() -> str:
-    """Model for extraction (and later the live interviewer): fast and capable."""
+    """Model for extraction and the staged-round interviewer: fast and capable."""
     return os.environ.get("MOCK_MODEL", "").strip() or DEFAULT_MODEL
 
 

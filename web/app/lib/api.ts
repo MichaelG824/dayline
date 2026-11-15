@@ -669,6 +669,10 @@ export interface MockSessionSummary {
   startedAt: string | null;
   endedAt: string | null;
   overallScore: number | null;
+  // Staged rounds only (null otherwise).
+  stagedProblemId: string | null;
+  stageCount: number | null;
+  stagesPassed: number | null;
   createdAt: string | null;
 }
 
@@ -785,6 +789,8 @@ export interface MockSessionDetail extends MockSessionSummary {
   testReport?: TestReport | null;
   finalDiff?: string;
   events?: MockEvent[];
+  // Staged rounds only.
+  staged?: StagedRound | null;
 }
 
 // Live sessions (a sandbox per session). Mirrors services/mock_live.py and
@@ -806,10 +812,21 @@ export interface LivePack {
   error: string | null;
 }
 
+export interface StagedProblemSummary {
+  id: string;
+  title: string;
+  pack: string;
+  roundType: string;
+  durationMin: number;
+  summary: string;
+  stageCount: number;
+}
+
 export interface LiveAvailability {
   available: boolean;
   reason: string | null;
   templates: LiveTemplate[];
+  stagedProblems: StagedProblemSummary[];
   packs: LivePack[];
 }
 
@@ -862,10 +879,68 @@ export interface TestReport {
 }
 
 export interface MockEvent {
-  kind: 'session_started' | 'file_saved' | 'tests_run' | 'command_run' | 'session_ended';
+  kind:
+    | 'session_started'
+    | 'file_saved'
+    | 'tests_run'
+    | 'command_run'
+    | 'session_ended'
+    | 'stage_tests_run'
+    | 'stage_passed'
+    | 'stage_skipped'
+    | 'interviewer_message'
+    | 'candidate_message';
   data: Record<string, unknown>;
   at: string | null;
 }
+
+// Staged rounds. Mirrors serializers.staged_round_json and mock/staged.py.
+export type StageStatus = 'locked' | 'active' | 'passed' | 'skipped' | 'failed';
+
+// hit: handled before the tests said anything; caught: fixed after a failing
+// run; pending: the stage is still active.
+export type EdgeOutcome = 'hit' | 'caught' | 'missed' | 'pending' | 'not_reached';
+
+export interface StagedStage {
+  number: number;
+  // null while the stage is locked.
+  title: string | null;
+  promptMd: string | null;
+  targetMin: number | null;
+  status: StageStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  timeSpentS: number | null;
+  runs: number;
+  report: TestReport | null;
+  // How much of the previous stage's code survived (null for stage 1).
+  design: { kept: number; verdict: 'extended' | 'rewrote' } | null;
+  // Empty until the stage (or the round) is over.
+  edgeCases: { id: string; title: string; outcome: EdgeOutcome }[];
+}
+
+export interface ChatMessage {
+  role: 'interviewer' | 'candidate';
+  text: string;
+  stage: number;
+  at: string | null;
+}
+
+export interface StagedRound {
+  problemId: string;
+  // 1-based; null once every stage is done.
+  activeStage: number | null;
+  stages: StagedStage[];
+  chat: ChatMessage[];
+}
+
+export interface StageRun {
+  report: TestReport;
+  passed: boolean;
+  staged: StagedRound;
+}
+
+export type InterviewerTrigger = 'stage_start' | 'follow_up' | 'message';
 
 export interface MockSessionInput {
   title: string;
@@ -987,6 +1062,39 @@ export async function getLiveAvailability(): Promise<LiveAvailability> {
 export async function startLiveSession(input: LiveSessionInput): Promise<MockSessionDetail> {
   const res = await apiFetch('/api/mock/live/sessions', jsonInit('POST', input));
   return (await checkOk(res, 'Could not start the session')).json();
+}
+
+export async function startStagedRound(input: {
+  problemId: string;
+  questionId: string | null;
+  rubricId: string | null;
+  guidelineId: string | null;
+}): Promise<MockSessionDetail> {
+  const res = await apiFetch('/api/mock/staged/sessions', jsonInit('POST', input));
+  return (await checkOk(res, 'Could not start the round')).json();
+}
+
+// Runs the active stage's hidden tests; a pass unlocks the next stage.
+export async function runStageTests(sessionId: string): Promise<StageRun> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/stage/tests`, { method: 'POST' });
+  return (await checkOk(res, 'Could not run the tests')).json();
+}
+
+export async function skipStage(sessionId: string): Promise<StagedRound> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/stage/skip`, { method: 'POST' });
+  return (await checkOk(res, 'Could not skip the stage')).json();
+}
+
+export async function interviewerTurn(
+  sessionId: string,
+  trigger: InterviewerTrigger,
+  message?: string,
+): Promise<StagedRound> {
+  const res = await apiFetch(
+    `/api/mock/sessions/${sessionId}/interviewer`,
+    jsonInit('POST', { trigger, message: message ?? null }),
+  );
+  return (await checkOk(res, 'The interviewer could not reply')).json();
 }
 
 export async function getSandboxStatus(sessionId: string): Promise<SandboxStatus> {

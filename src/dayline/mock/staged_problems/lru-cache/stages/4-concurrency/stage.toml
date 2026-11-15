@@ -1,0 +1,7 @@
+title = "Thread safety"
+target_min = 20
+
+[[edge_cases]]
+id = "reads_mutate_recency"
+title = "Concurrent gets don't corrupt the recency order"
+tests = ["test_concurrent_reads_keep_the_cache_consistent"]

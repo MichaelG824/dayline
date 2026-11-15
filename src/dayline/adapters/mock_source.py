@@ -33,6 +33,8 @@ from dayline.models import (
     MockSessionStatus,
     RubricCriterion,
     Scorecard,
+    StageAttempt,
+    StageStatus,
     WeakArea,
 )
 
@@ -368,6 +370,30 @@ def _row_to_guideline(row: dict[str, Any]) -> MockGuideline:
     )
 
 
+def _stage_to_json(stage: StageAttempt) -> dict[str, Any]:
+    return {
+        "status": stage.status.value,
+        "started_at": stage.started_at.isoformat() if stage.started_at else None,
+        "finished_at": stage.finished_at.isoformat() if stage.finished_at else None,
+        "runs": stage.runs,
+        "first_outcomes": stage.first_outcomes,
+        "report": stage.report,
+        "code": stage.code,
+    }
+
+
+def _json_to_stage(data: dict[str, Any]) -> StageAttempt:
+    return StageAttempt(
+        status=StageStatus(data.get("status") or StageStatus.LOCKED),
+        started_at=_parse_dt(data.get("started_at")),
+        finished_at=_parse_dt(data.get("finished_at")),
+        runs=int(data.get("runs") or 0),
+        first_outcomes=dict(data.get("first_outcomes") or {}),
+        report=data.get("report"),
+        code=dict(data.get("code") or {}),
+    )
+
+
 def _row_to_session(row: dict[str, Any]) -> MockSession:
     return MockSession(
         id=row["id"],
@@ -385,6 +411,8 @@ def _row_to_session(row: dict[str, Any]) -> MockSession:
         final_files=dict(row.get("final_files") or {}),
         final_diff=row.get("final_diff") or "",
         test_report=row.get("test_report"),
+        staged_problem_id=row.get("staged_problem_id"),
+        stages=[_json_to_stage(s) for s in row.get("stages") or []],
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
     )
@@ -412,6 +440,12 @@ def _session_to_row(session: MockSession) -> dict[str, Any]:
             "final_files": session.final_files,
             "final_diff": session.final_diff,
             "test_report": session.test_report,
+        }
+    # Likewise only staged rounds write the migration-013 columns.
+    if session.staged_problem_id:
+        row |= {
+            "staged_problem_id": session.staged_problem_id,
+            "stages": [_stage_to_json(s) for s in session.stages],
         }
     return row
 

@@ -319,6 +319,8 @@ class MockRoundType(StrEnum):
     SYSTEM_DESIGN = "System design"
     DEBUGGING = "Debugging"
     BEHAVIORAL = "Behavioral"
+    # A staged round: production follow-ups added to the candidate's own code.
+    PRACTICAL_CODING = "Practical coding"
 
 
 @dataclass(slots=True)
@@ -397,11 +399,41 @@ class MockSessionStatus(StrEnum):
     ENDED = "ended"
 
 
+class StageStatus(StrEnum):
+    LOCKED = "locked"  # Not reached yet.
+    ACTIVE = "active"  # The stage the candidate is on.
+    PASSED = "passed"  # Its hidden tests (and every earlier stage's) passed.
+    SKIPPED = "skipped"  # The candidate moved on without passing it.
+    FAILED = "failed"  # The round ended while this stage was still active.
+
+
+@dataclass(slots=True)
+class StageAttempt:
+    """How one stage of a staged round went (see ``mock/staged.py``). Stored
+    in order as ``MockSession.stages``; the stage's content (prompt, hidden
+    tests) comes from the problem, by position."""
+
+    status: StageStatus = StageStatus.LOCKED
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    # Hidden test runs while this stage was the active one.
+    runs: int = 0
+    # This stage's own hidden tests on its first run: {test name: outcome}.
+    # Tells an edge case handled up front from one fixed after a failing run.
+    first_outcomes: dict[str, str] = field(default_factory=dict)
+    # The last hidden test run while this stage was active, as the runner
+    # reported it (it includes earlier stages' tests too).
+    report: dict[str, Any] | None = None
+    # The candidate's solution files when the stage finished.
+    code: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass(slots=True)
 class MockSession:
     """One practice attempt: a pasted transcript, or a live session in a
     sandbox. A live session's ``final_*`` fields and ``test_report`` are
-    filled in when it ends."""
+    filled in when it ends. A staged round is a live session with a
+    ``staged_problem_id``: its ``stages`` record how each stage went."""
 
     title: str
     id: str
@@ -419,6 +451,9 @@ class MockSession:
     final_diff: str = ""
     # The last test run as the sandbox runner reported it (camelCase JSON).
     test_report: dict[str, Any] | None = None
+    # A built-in staged problem id (src/dayline/mock/staged_problems/<id>).
+    staged_problem_id: str | None = None
+    stages: list[StageAttempt] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -429,6 +464,13 @@ class MockEventKind(StrEnum):
     TESTS_RUN = "tests_run"
     COMMAND_RUN = "command_run"  # Typed in the terminal: {"command", "exitCode"}.
     SESSION_ENDED = "session_ended"
+    # Staged rounds. Stage numbers are 1-based.
+    STAGE_TESTS_RUN = "stage_tests_run"  # {"stage", "status", "passed", "failed", "errors"}
+    STAGE_PASSED = "stage_passed"  # {"stage"}
+    STAGE_SKIPPED = "stage_skipped"  # {"stage"}
+    # The interviewer chat: {"stage", "text"}, plus "trigger" for the interviewer.
+    INTERVIEWER_MESSAGE = "interviewer_message"
+    CANDIDATE_MESSAGE = "candidate_message"
 
 
 @dataclass(slots=True)

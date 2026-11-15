@@ -1,0 +1,17 @@
+title = "Weighted size"
+target_min = 20
+
+[[edge_cases]]
+id = "oversized_item"
+title = "An item larger than the whole capacity leaves the cache intact"
+tests = ["test_an_oversized_item_leaves_the_cache_intact"]
+
+[[edge_cases]]
+id = "update_changes_size"
+title = "Updating a key with a new size accounts for the old size"
+tests = ["test_growing_a_key_evicts_others_but_never_itself", "test_shrinking_a_key_frees_room"]
+
+[[edge_cases]]
+id = "multi_evict"
+title = "One put evicts as many LRU entries as it needs"
+tests = ["test_one_put_can_evict_several_entries"]

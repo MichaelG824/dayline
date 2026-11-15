@@ -23,6 +23,8 @@ import {
   SECONDARY_BUTTON,
   SECTION_TITLE,
 } from './ui';
+import { GraderText } from './GraderText';
+import { StagedSummary } from './StagedSummary';
 import { TestResults } from './TestResults';
 
 interface Props {
@@ -153,7 +155,12 @@ export function SessionView({
           <h2 className="text-xl font-semibold text-zinc-900 dark:text-white">{session.title}</h2>
           <p className="font-mono text-xs text-zinc-500 flex gap-x-5 gap-y-1 flex-wrap mt-1">
             <span>{formatShortDate(session.createdAt)}</span>
-            {isLive && <span>Live session{session.pack ? ` · ${packLabel(session.pack)}` : ''}</span>}
+            {isLive && (
+              <span>
+                {session.staged ? 'Staged round' : 'Live session'}
+                {session.pack ? ` · ${packLabel(session.pack)}` : ''}
+              </span>
+            )}
             {length != null && <span>{formatClock(length)} long</span>}
             {card && <span>Graded by {card.graderModel}</span>}
             {session.questionId && (
@@ -188,6 +195,8 @@ export function SessionView({
       </div>
 
       {error && <ErrorText>{error}</ErrorText>}
+
+      {session.staged && !inProgress && <StagedSummary staged={session.staged} />}
 
       {inProgress ? (
         <div className={`${CARD} px-4 py-8 text-center text-sm text-zinc-500`}>
@@ -335,6 +344,16 @@ function eventText({ event, saves }: TimelineEntry): string {
       return `$ ${d.command}${d.exitCode ? `  (exit ${d.exitCode})` : ''}`;
     case 'session_ended':
       return d.sandboxLost ? 'Ended (the sandbox had already been deleted)' : 'Ended';
+    case 'stage_tests_run':
+      return `Ran stage ${d.stage} tests: ${d.passed ?? 0} passed, ${Number(d.failed ?? 0) + Number(d.errors ?? 0)} failing`;
+    case 'stage_passed':
+      return `Passed stage ${d.stage}`;
+    case 'stage_skipped':
+      return `Skipped stage ${d.stage}`;
+    case 'interviewer_message':
+      return `Interviewer: ${d.text}`;
+    case 'candidate_message':
+      return `You: ${d.text}`;
   }
 }
 
@@ -373,7 +392,10 @@ function diffLineClass(line: string): string {
 // What a live session left behind: the last test run, the timeline, and the diff.
 function WorkRecord({ session }: { session: MockSessionDetail }) {
   const start = session.startedAt ? Date.parse(session.startedAt) : null;
-  const entries = timelineEntries(session.events ?? []);
+  // The interviewer chat is in the transcript, not the timeline.
+  const entries = timelineEntries(
+    (session.events ?? []).filter((e) => e.kind !== 'interviewer_message' && e.kind !== 'candidate_message'),
+  );
   const clock = (at: string | null) => (start && at ? formatClock((Date.parse(at) - start) / 1000) : '');
   const diff = session.finalDiff ?? '';
   return (
@@ -426,23 +448,6 @@ function WorkRecord({ session }: { session: MockSessionDetail }) {
           <p className="text-sm text-zinc-500">No changes to the starting repo.</p>
         )}
       </section>
-    </>
-  );
-}
-
-// The grader writes plain text but marks code with `backticks`.
-function GraderText({ text }: { text: string }) {
-  return (
-    <>
-      {text.split(/(`[^`\n]+`)/).map((part, i) =>
-        part.length > 2 && part.startsWith('`') && part.endsWith('`') ? (
-          <code key={i} className="rounded bg-zinc-100 dark:bg-zinc-800/80 px-1 py-px font-mono text-[0.85em]">
-            {part.slice(1, -1)}
-          </code>
-        ) : (
-          part
-        ),
-      )}
     </>
   );
 }

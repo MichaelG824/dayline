@@ -5,3 +5,6 @@ editor_language = "python"
 # {junit} is where the runner reads JUnit XML results from.
 test_cmd = "python -m pytest -q -p no:cacheprovider --junitxml={junit}"
 test_timeout_s = 60
+# Staged rounds' hidden tests: only the files in {hidden}, with the
+# candidate's own pytest config ignored. `python -m` keeps /workspace importable.
+hidden_test_cmd = "python -m pytest -q -p no:cacheprovider --rootdir={hidden} -c /dev/null --junitxml={junit} {hidden}"

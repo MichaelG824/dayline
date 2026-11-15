@@ -7,6 +7,7 @@ export const ROUND_TYPES = [
   'System design',
   'Debugging',
   'Behavioral',
+  'Practical coding',
 ] as const;
 
 export const QUESTION_SOURCES: { value: string; label: string }[] = [

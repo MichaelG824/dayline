@@ -7,6 +7,9 @@ recording events (saves, test runs), and ends it by saving the final files and
 the diff against the template. Grading then works like any other session
 (``services/mock.py``), with the work record standing in for, or alongside,
 a transcript.
+
+A staged round (``services/mock_staged.py``) is a live session too, so its
+files, terminal, and ending all go through here.
 """
 
 from __future__ import annotations
@@ -27,8 +30,9 @@ from dayline.adapters.sandbox import (
 )
 from dayline.api.context import AppContext
 from dayline.api.services.mock import _get_session, check_session_refs
+from dayline.mock import staged
 from dayline.mock.templates import builtin_templates
-from dayline.mock.worklog import line_changes, repo_diff
+from dayline.mock.worklog import chat_transcript, line_changes, repo_diff
 from dayline.models import (
     MockEvent,
     MockEventKind,
@@ -39,7 +43,7 @@ from dayline.models import (
 
 
 @contextlib.contextmanager
-def _runner_errors() -> Iterator[None]:
+def runner_errors() -> Iterator[None]:
     """Turn runner failures into HTTP errors the UI can show as-is."""
     try:
         yield
@@ -55,7 +59,7 @@ def _runner_errors() -> Iterator[None]:
         raise HTTPException(status_code=status, detail=exc.detail) from exc
 
 
-def _sandbox(ctx: AppContext) -> SandboxClient:
+def sandbox_client(ctx: AppContext) -> SandboxClient:
     if ctx.sandbox is None:
         raise HTTPException(
             status_code=503,
@@ -64,7 +68,7 @@ def _sandbox(ctx: AppContext) -> SandboxClient:
     return ctx.sandbox
 
 
-def _live_session(ctx: AppContext, session_id: str) -> MockSession:
+def live_session(ctx: AppContext, session_id: str) -> MockSession:
     """A live session that has not ended yet, or a 404/409."""
     session = _get_session(ctx, session_id)
     if session.kind is not MockSessionKind.LIVE:
@@ -74,12 +78,23 @@ def _live_session(ctx: AppContext, session_id: str) -> MockSession:
     return session
 
 
-def _event(ctx: AppContext, session_id: str, kind: MockEventKind, **data: Any) -> None:
+def event(ctx: AppContext, session_id: str, kind: MockEventKind, **data: Any) -> None:
     ctx.mock_source.add_event(MockEvent(session_id=session_id, kind=kind, data=data))
 
 
+def starting_files(session: MockSession) -> dict[str, str] | None:
+    """The files the session's sandbox started with (``None`` if its
+    template or staged problem no longer exists)."""
+    if session.staged_problem_id:
+        problem = staged.builtin_staged_problems().get(session.staged_problem_id)
+        return problem.starter if problem else None
+    template = builtin_templates().get(session.template_id or "")
+    return template.files if template else None
+
+
 def availability(ctx: AppContext) -> dict[str, Any]:
-    """Whether live sessions can start, and the templates to pick from."""
+    """Whether live sessions can start, and the templates and staged
+    problems to pick from."""
     templates = [
         {
             "id": t.id,
@@ -100,7 +115,25 @@ def availability(ctx: AppContext) -> dict[str, Any]:
             packs = ctx.sandbox.packs()
         except (SandboxUnavailable, SandboxRequestError) as exc:
             reason = str(exc)
-    return {"available": reason is None, "reason": reason, "templates": templates, "packs": packs}
+    staged_problems = [
+        {
+            "id": p.id,
+            "title": p.title,
+            "pack": p.pack,
+            "roundType": p.round_type.value,
+            "durationMin": p.duration_min,
+            "summary": p.summary,
+            "stageCount": len(p.stages),
+        }
+        for p in staged.builtin_staged_problems().values()
+    ]
+    return {
+        "available": reason is None,
+        "reason": reason,
+        "templates": templates,
+        "stagedProblems": staged_problems,
+        "packs": packs,
+    }
 
 
 def start_session(
@@ -112,7 +145,7 @@ def start_session(
 ) -> str:
     """Create the session and its sandbox; returns the session id. If the
     sandbox cannot start, the session is not kept."""
-    sandbox = _sandbox(ctx)
+    sandbox = sandbox_client(ctx)
     template = builtin_templates().get(template_id)
     if template is None:
         raise HTTPException(status_code=404, detail=f"No template {template_id!r}")
@@ -134,22 +167,22 @@ def start_session(
         )
     )
     try:
-        with _runner_errors():
+        with runner_errors():
             sandbox.create(session.id, template.pack, template.files)
     except HTTPException:
         ctx.mock_source.delete_session(session.id)
         raise
-    _event(ctx, session.id, MockEventKind.SESSION_STARTED, template=template.id)
+    event(ctx, session.id, MockEventKind.SESSION_STARTED, template=template.id)
     return session.id
 
 
 def sandbox_status(ctx: AppContext, session_id: str) -> dict[str, Any]:
     """The sandbox's state for the workspace header: ``running``, ``stopped``
     (idle or out of time; files are kept), or ``gone``."""
-    _live_session(ctx, session_id)
-    sandbox = _sandbox(ctx)
+    live_session(ctx, session_id)
+    sandbox = sandbox_client(ctx)
     try:
-        with _runner_errors():
+        with runner_errors():
             info = sandbox.info(session_id)
             packs = sandbox.packs()
     except HTTPException as exc:
@@ -166,22 +199,22 @@ def sandbox_status(ctx: AppContext, session_id: str) -> dict[str, Any]:
 
 
 def resume(ctx: AppContext, session_id: str) -> dict[str, Any]:
-    _live_session(ctx, session_id)
-    with _runner_errors():
-        _sandbox(ctx).resume(session_id)
+    live_session(ctx, session_id)
+    with runner_errors():
+        sandbox_client(ctx).resume(session_id)
     return sandbox_status(ctx, session_id)
 
 
 def list_files(ctx: AppContext, session_id: str) -> list[dict[str, Any]]:
-    _live_session(ctx, session_id)
-    with _runner_errors():
-        return _sandbox(ctx).list_files(session_id)
+    live_session(ctx, session_id)
+    with runner_errors():
+        return sandbox_client(ctx).list_files(session_id)
 
 
 def read_file(ctx: AppContext, session_id: str, path: str) -> dict[str, Any]:
-    _live_session(ctx, session_id)
-    with _runner_errors():
-        return _sandbox(ctx).read_file(session_id, path)
+    live_session(ctx, session_id)
+    with runner_errors():
+        return sandbox_client(ctx).read_file(session_id, path)
 
 
 def write_file(
@@ -189,9 +222,9 @@ def write_file(
 ) -> dict[str, Any]:
     """Save a file. ``base_version`` is the version the editor loaded (``""``
     for a new file); a file changed since (say, from the terminal) is a 409."""
-    _live_session(ctx, session_id)
-    sandbox = _sandbox(ctx)
-    with _runner_errors():
+    live_session(ctx, session_id)
+    sandbox = sandbox_client(ctx)
+    with runner_errors():
         try:
             before: str | None = sandbox.read_file(session_id, path)["content"]
         except SandboxRequestError as exc:
@@ -201,18 +234,18 @@ def write_file(
         result = sandbox.write_file(session_id, path, content, base_version)
     added, removed = line_changes(before, content)
     if added or removed or before is None:
-        _event(ctx, session_id, MockEventKind.FILE_SAVED, path=path, added=added, removed=removed)
+        event(ctx, session_id, MockEventKind.FILE_SAVED, path=path, added=added, removed=removed)
     return result
 
 
 def run_tests(ctx: AppContext, session_id: str) -> dict[str, Any]:
     """Run the pack's test command; the report is kept as the session's last run."""
-    session = _live_session(ctx, session_id)
-    with _runner_errors():
-        report = _sandbox(ctx).run_tests(session_id)
+    session = live_session(ctx, session_id)
+    with runner_errors():
+        report = sandbox_client(ctx).run_tests(session_id)
     session.test_report = report
     ctx.mock_source.update_session(session)
-    _event(
+    event(
         ctx,
         session_id,
         MockEventKind.TESTS_RUN,
@@ -232,10 +265,10 @@ def end_session(ctx: AppContext, session_id: str) -> None:
     session = _get_session(ctx, session_id)
     if session.kind is not MockSessionKind.LIVE or session.status is MockSessionStatus.ENDED:
         return
-    sandbox = _sandbox(ctx)
+    sandbox = sandbox_client(ctx)
     lost = False
     try:
-        with _runner_errors():
+        with runner_errors():
             files: dict[str, str] = sandbox.snapshot(session_id)["files"]
             commands = sandbox.commands(session_id)
     except HTTPException as exc:
@@ -252,13 +285,20 @@ def end_session(ctx: AppContext, session_id: str) -> None:
             )
         )
 
-    template = builtin_templates().get(session.template_id or "")
+    start = starting_files(session)
+    now = datetime.now(UTC)
     session.final_files = files
-    session.final_diff = "" if lost or template is None else repo_diff(template.files, files)
+    session.final_diff = "" if lost or start is None else repo_diff(start, files)
     session.status = MockSessionStatus.ENDED
-    session.ended_at = datetime.now(UTC)
+    session.ended_at = now
+    problem = staged.builtin_staged_problems().get(session.staged_problem_id or "")
+    if problem is not None:
+        staged.close_round(session.stages, staged.solution_files(problem, files), now)
+        # The interviewer chat is the round's transcript, for grading.
+        events = ctx.mock_source.list_events(session_id)
+        session.transcript = chat_transcript(events, session.started_at)
     ctx.mock_source.update_session(session)
-    _event(ctx, session_id, MockEventKind.SESSION_ENDED, sandboxLost=lost)
+    event(ctx, session_id, MockEventKind.SESSION_ENDED, sandboxLost=lost)
     with contextlib.suppress(SandboxUnavailable, SandboxRequestError):
         sandbox.destroy(session_id)
 
@@ -268,5 +308,5 @@ def open_terminal(
 ) -> contextlib.AbstractAsyncContextManager[TerminalConnection]:
     """The session's shell. Checks the session first (raising HTTPException);
     connecting can raise :class:`SandboxUnavailable`."""
-    _live_session(ctx, session_id)
-    return _sandbox(ctx).open_terminal(session_id, cols, rows)
+    live_session(ctx, session_id)
+    return sandbox_client(ctx).open_terminal(session_id, cols, rows)

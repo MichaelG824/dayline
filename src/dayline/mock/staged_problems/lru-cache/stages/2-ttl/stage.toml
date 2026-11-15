@@ -1,0 +1,12 @@
+title = "Per-entry TTL"
+target_min = 15
+
+[[edge_cases]]
+id = "expired_but_present"
+title = "An expired key still in the map is never returned"
+tests = ["test_expired_key_is_never_returned_while_still_stored", "test_expired_key_stays_gone_after_other_operations"]
+
+[[edge_cases]]
+id = "put_resets_ttl"
+title = "Re-putting a key replaces its TTL"
+tests = ["test_put_replaces_the_ttl"]

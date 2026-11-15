@@ -36,6 +36,11 @@ class CreateRequest(BaseModel):
     files: dict[str, str] = Field(default_factory=dict)
 
 
+class HiddenTestsRequest(BaseModel):
+    # Test files by path (relative to the hidden-tests folder), for one run only.
+    files: dict[str, str]
+
+
 class WriteRequest(BaseModel):
     content: str
     # The version the editor loaded; "" = the file must not exist yet. Omit to overwrite.
@@ -140,6 +145,10 @@ def create_app(manager: SandboxManager | None = None, settings: Settings | None 
     @app.post("/sandboxes/{sandbox_id}/tests", dependencies=auth)
     def run_tests(sandbox_id: str, m: Manager) -> dict[str, Any]:
         return m.run_tests(sandbox_id).to_json()
+
+    @app.post("/sandboxes/{sandbox_id}/hidden-tests", dependencies=auth)
+    def run_hidden_tests(sandbox_id: str, body: HiddenTestsRequest, m: Manager) -> dict[str, Any]:
+        return m.run_hidden_tests(sandbox_id, body.files).to_json()
 
     @app.websocket("/sandboxes/{sandbox_id}/pty")
     async def pty(ws: WebSocket, sandbox_id: str, cols: int = 80, rows: int = 24) -> None:

@@ -133,6 +133,28 @@ def test_lockdown(manager: SandboxManager) -> None:
     assert code != 0
 
 
+def test_hidden_tests_run_against_the_workspace_and_leave_no_trace(
+    manager: SandboxManager,
+) -> None:
+    sid = _id()
+    # The candidate's own pytest config must not change how hidden tests run.
+    manager.create(sid, "python", {**CALC, "pytest.ini": "[pytest]\naddopts = --nope\n"})
+    hidden = {
+        "test_stage_1_add.py": (
+            "from calc import add\n\n\ndef test_zero():\n    assert add(0, 0) == 0\n\n\n"
+            "def test_add():\n    assert add(2, 2) == 4\n"
+        )
+    }
+    report = manager.run_hidden_tests(sid, hidden)
+    outcomes = {c.name: c.outcome for c in report.cases}
+    assert outcomes == {"test_zero": "passed", "test_add": "failed"}
+    # Only the hidden files ran (not tests/test_calc.py), and they are gone again.
+    assert all(c.classname == "test_stage_1_add" for c in report.cases)
+    assert {e.path for e in manager.list_files(sid)} == {*CALC, "pytest.ini"}
+    code, _ = manager._exec(manager._running(sid), ["test", "-e", ".dayline/hidden"])
+    assert code != 0
+
+
 def test_runaway_tests_time_out(manager: SandboxManager) -> None:
     sid = _id()
     manager.create(sid, "python", {"test_loop.py": "def test_forever():\n    while True: pass\n"})
