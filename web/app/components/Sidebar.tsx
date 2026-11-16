@@ -1,13 +1,20 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CategoryWeight, Interview, applyCategoryWeights, putCategoryWeights, signOut } from '../lib/api';
 import { categoryMeta, formatDuration, isMiscCategory, rankCategories } from '../lib/categories';
 import { DayTask } from '../lib/dayTasks';
 import { daysUntil, formatDayLabel } from '../lib/dates';
+import { CLOSE_ICON, NavIcon, SidebarNav, Tab } from './SidebarNav';
 import { ThemeToggle } from './ThemeToggle';
 
 interface Props {
+  tab: Tab;
+  onSelectTab: (tab: Tab) => void;
+  pomodoroClock: string | null;
+  /** Below lg the sidebar is a drawer; this is whether it is showing. */
+  open: boolean;
+  onClose: () => void;
   day: string;
   dayTasks: DayTask[];
   categoryWeights: CategoryWeight[];
@@ -19,6 +26,11 @@ interface Props {
 }
 
 export function Sidebar({
+  tab,
+  onSelectTab,
+  pomodoroClock,
+  open,
+  onClose,
   day,
   dayTasks,
   categoryWeights,
@@ -29,6 +41,12 @@ export function Sidebar({
   onGoToCalendar,
 }: Props) {
   const [applying, setApplying] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Opening the drawer moves focus into it, so keyboard users land on the nav.
+  useEffect(() => {
+    if (open) closeRef.current?.focus();
+  }, [open]);
 
   const prepTasks = dayTasks.filter((t) => !isMiscCategory(t.category));
   const miscTasks = dayTasks.filter((t) => isMiscCategory(t.category));
@@ -75,18 +93,46 @@ export function Sidebar({
   const next = upcoming[0];
 
   return (
-    <aside className="w-72 shrink-0 border-r border-zinc-200 dark:border-zinc-800 flex flex-col p-5 gap-5 overflow-y-auto">
-      <div className="flex items-start justify-between">
+    // Below lg: an off-canvas drawer (invisible when closed, so its controls
+    // leave the tab order). From lg up: a sticky full-height column.
+    <aside
+      id="app-sidebar"
+      aria-label="Sidebar"
+      className={`fixed inset-y-0 left-0 z-30 w-72 max-w-[85vw] flex flex-col p-5 gap-5 overflow-y-auto overscroll-contain bg-zinc-50 dark:bg-zinc-950 border-r border-zinc-200 dark:border-zinc-800 duration-200 ease-out motion-reduce:transition-none lg:sticky lg:z-auto lg:top-0 lg:h-dvh lg:max-w-none lg:shrink-0 lg:translate-x-0 lg:visible lg:shadow-none lg:transition-none ${
+        // Visibility only transitions on close (so the slide-out stays visible);
+        // on open it flips at once, which lets the close button take focus.
+        open
+          ? 'translate-x-0 visible shadow-xl transition-[translate]'
+          : '-translate-x-full invisible transition-[translate,visibility]'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
         <div>
           <p className="font-mono text-xs tracking-widest text-zinc-500 dark:text-zinc-500">INTERVIEW</p>
           <h1 className="text-2xl font-bold text-zinc-900 dark:text-white">Prep Tracker</h1>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Close navigation"
+            className="lg:hidden w-8 h-8 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-300 dark:hover:border-zinc-700 focus-visible:outline-2 focus-visible:outline-indigo-500"
+          >
+            <NavIcon d={CLOSE_ICON} />
+          </button>
+        </div>
       </div>
+
+      <SidebarNav tab={tab} onSelect={onSelectTab} pomodoroClock={pomodoroClock} />
+
+      <div className="border-t border-zinc-200 dark:border-zinc-800" />
 
       <div className="flex items-center gap-2">
         <button
           onClick={() => onNavigateDay(-1)}
+          aria-label="Previous day"
           className="w-8 h-8 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-300 dark:hover:border-zinc-700"
         >
           &lsaquo;
@@ -94,6 +140,7 @@ export function Sidebar({
         <span className="flex-1 text-center font-mono font-medium">{formatDayLabel(day)}</span>
         <button
           onClick={() => onNavigateDay(1)}
+          aria-label="Next day"
           className="w-8 h-8 flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-300 dark:hover:border-zinc-700"
         >
           &rsaquo;
@@ -172,7 +219,9 @@ export function Sidebar({
 
       {upcoming.length > 0 && (
         <div className="rounded-lg border border-amber-300 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-950/30 p-3">
-          <p className="font-mono text-sm text-amber-700 dark:text-amber-300">{upcoming.length} interviews upcoming</p>
+          <p className="font-mono text-sm text-amber-700 dark:text-amber-300">
+            {upcoming.length} {upcoming.length === 1 ? 'interview' : 'interviews'} upcoming
+          </p>
           {next && (
             <p className="font-mono text-xs text-amber-600/80 dark:text-amber-500/80">
               Next: {next.company ?? 'Unknown'} in {daysUntil(next.scheduledAt)}d

@@ -140,7 +140,9 @@ export function ChatTab({ day, onPlanUpdated }: Props) {
   }
 
   return (
-    <div className="flex flex-col h-full max-h-[calc(100vh-140px)]">
+    // Fits the viewport under AppShell's chrome: its content padding, plus the
+    // 3.5rem menu bar below lg.
+    <div className="flex flex-col h-full max-h-[calc(100dvh-5.5rem)] sm:max-h-[calc(100dvh-6.5rem)] lg:max-h-[calc(100dvh-3rem)]">
       <div className="flex-1 overflow-y-auto flex flex-col gap-4">
         <div className="flex gap-3 max-w-2xl">
           <div className="w-8 h-8 shrink-0 rounded-full bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 flex items-center justify-center text-xs font-mono">
