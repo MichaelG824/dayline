@@ -1,7 +1,8 @@
 """What a candidate did in a live session, as text: the diff against the
 starting repo, line counts per save, a compact timeline plus final test
 results for the grader, a staged round's interviewer chat as a transcript,
-and a compact log of how the candidate used the AI assistant.
+a compact log of how the candidate used the AI assistant, and the full
+replay of the round for the session page (:func:`replay`).
 
 Pure functions over models - no I/O.
 """
@@ -9,12 +10,14 @@ Pure functions over models - no I/O.
 from __future__ import annotations
 
 import difflib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Literal
 
 from dayline.models import MockEvent, MockEventKind, MockSession
 
 MAX_DIFF_CHARS = 200_000
+MAX_SAVE_DIFF_CHARS = 20_000
 MAX_TIMELINE_LINES = 120
 MAX_FAILURES_SHOWN = 10
 # The interviewer chat: a transcript of its own, so not timeline lines.
@@ -41,6 +44,15 @@ def file_diff(path: str, before: str | None, after: str | None) -> str:
     )
     # A last line without a newline would glue onto the next file's header.
     return "".join(line if line.endswith("\n") else line + "\n" for line in lines)
+
+
+def save_diff(path: str, before: str | None, after: str) -> str:
+    """One save's diff, kept on its ``file_saved`` event for the replay;
+    cut when huge (the final diff is always whole)."""
+    diff = file_diff(path, before, after)
+    if len(diff) > MAX_SAVE_DIFF_CHARS:
+        return diff[:MAX_SAVE_DIFF_CHARS] + "… (diff cut)\n"
+    return diff
 
 
 def repo_diff(start: dict[str, str], end: dict[str, str]) -> str:
@@ -97,6 +109,9 @@ def _event_line(event: MockEvent, saves: int = 1) -> str:
         return f"passed stage {d.get('stage')}"
     if event.kind is MockEventKind.STAGE_SKIPPED:
         return f"skipped stage {d.get('stage')} without passing it"
+    if event.kind is MockEventKind.STAGE_UNLOCKED:
+        how = "early, at the candidate's request" if d.get("early") else "on schedule"
+        return f"the change request (stage {d.get('stage')}) arrived {how}"
     if event.kind is MockEventKind.ASSISTANT_PROMPT:
         text = _one_line(str(d.get("text", "")), MAX_AI_TIMELINE_CHARS)
         return f'asked the AI assistant ({d.get("mode")} mode): "{text}"'
@@ -291,3 +306,189 @@ def work_record(session: MockSession, events: list[MockEvent]) -> str:
         parts += ["## AI assistant use", assistant]
     parts += ["## Diff against the starting repo", session.final_diff.strip() or "(no changes)"]
     return "\n\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# Replay: every event of the round, for the session page
+# --------------------------------------------------------------------------- #
+
+ReplayGroup = Literal["edits", "tests", "app", "assistant", "chat", "stages"]
+Tone = Literal["neutral", "good", "bad", "warn", "accent"]
+MAX_REPLAY_TEXT_CHARS = 4000
+
+_GROUPS: dict[MockEventKind, ReplayGroup] = {
+    MockEventKind.SESSION_STARTED: "stages",
+    MockEventKind.SESSION_ENDED: "stages",
+    MockEventKind.STAGE_PASSED: "stages",
+    MockEventKind.STAGE_SKIPPED: "stages",
+    MockEventKind.STAGE_UNLOCKED: "stages",
+    MockEventKind.FILE_SAVED: "edits",
+    MockEventKind.TESTS_RUN: "tests",
+    MockEventKind.STAGE_TESTS_RUN: "tests",
+    MockEventKind.COMMAND_RUN: "tests",
+    MockEventKind.SERVER_ACTION: "app",
+    MockEventKind.PREVIEW_RELOADED: "app",
+    MockEventKind.ASSISTANT_PROMPT: "assistant",
+    MockEventKind.ASSISTANT_RESPONSE: "assistant",
+    MockEventKind.ASSISTANT_EDIT_PROPOSED: "assistant",
+    MockEventKind.ASSISTANT_EDIT_DECIDED: "assistant",
+    MockEventKind.INTERVIEWER_MESSAGE: "chat",
+    MockEventKind.CANDIDATE_MESSAGE: "chat",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayEntry:
+    """One moment of the round. ``t`` is seconds from the start (``None``
+    when unknown); ``group`` is what the replay filters by."""
+
+    at: datetime | None
+    t: float | None
+    group: ReplayGroup
+    kind: MockEventKind
+    title: str
+    detail: str = ""
+    diff: str = ""
+    tone: Tone = "neutral"
+    stage: int | None = None
+    # Small facts the page shows as chips: mode, decision, review time.
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def _cut(text: object, limit: int = MAX_REPLAY_TEXT_CHARS) -> str:
+    flat = str(text or "").strip()
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _run_tone(status: object) -> Tone:
+    return "good" if status == "passed" else "bad"
+
+
+def _counts(d: dict[str, Any]) -> str:
+    failing = int(d.get("failed", 0) or 0) + int(d.get("errors", 0) or 0)
+    return f"{d.get('passed', 0)} passed, {failing} failing"
+
+
+@dataclass(frozen=True, slots=True)
+class _Shown:
+    title: str
+    detail: str = ""
+    diff: str = ""
+    tone: Tone = "neutral"
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+_DECISIONS: dict[str, tuple[str, Tone]] = {
+    "accepted": ("Accepted", "good"),
+    "rejected": ("Rejected", "neutral"),
+    "conflict": ("Could not apply (the file had changed)", "warn"),
+}
+_SERVER_VERBS = {"start": "Started", "stop": "Stopped", "restart": "Restarted"}
+
+
+def _shown(event: MockEvent, decisions: dict[object, MockEvent]) -> _Shown:
+    d = event.data
+    kind = event.kind
+    if kind is MockEventKind.FILE_SAVED:
+        lines = {"added": d.get("added", 0), "removed": d.get("removed", 0)}
+        return _Shown(f"Saved {d.get('path')}", diff=str(d.get("diff") or ""), meta=lines)
+    if kind is MockEventKind.TESTS_RUN:
+        return _Shown(f"Ran tests: {_counts(d)}", tone=_run_tone(d.get("status")))
+    if kind is MockEventKind.STAGE_TESTS_RUN:
+        title = f"Ran stage {d.get('stage')}'s hidden tests: {_counts(d)}"
+        return _Shown(title, tone=_run_tone(d.get("status")))
+    if kind is MockEventKind.COMMAND_RUN:
+        tone: Tone = "bad" if d.get("exitCode") else "neutral"
+        return _Shown(f"$ {d.get('command')}", tone=tone, meta={"exitCode": d.get("exitCode")})
+    if kind is MockEventKind.SERVER_ACTION:
+        verb = _SERVER_VERBS.get(str(d.get("action")), str(d.get("action")))
+        return _Shown(f"{verb} the {d.get('server')} server")
+    if kind is MockEventKind.PREVIEW_RELOADED:
+        return _Shown(f"Reloaded the {d.get('server')} preview")
+    if kind is MockEventKind.ASSISTANT_PROMPT:
+        mode = d.get("mode")
+        return _Shown("Asked the AI", _cut(d.get("text")), tone="accent", meta={"mode": mode})
+    if kind is MockEventKind.ASSISTANT_RESPONSE:
+        status = str(d.get("status") or "done")
+        done = status == "done"
+        title = f"AI replied in {_seconds(d.get('durationMs'))}" if done else f"AI reply {status}"
+        meta = {"mode": d.get("mode"), "tools": len(d.get("tools") or [])}
+        return _Shown(title, _cut(d.get("text")), tone="neutral" if done else "warn", meta=meta)
+    if kind is MockEventKind.ASSISTANT_EDIT_PROPOSED:
+        decided = decisions.get(d.get("proposalId"))
+        label = "a new file" if d.get("newFile") else "an edit to"
+        meta = {
+            "outcome": str(decided.data.get("decision")) if decided else "never reviewed",
+            "added": d.get("added", 0),
+            "removed": d.get("removed", 0),
+        }
+        return _Shown(
+            f"AI proposed {label} {d.get('path')}",
+            _cut(d.get("summary"), 400),
+            str(d.get("diff") or ""),
+            "accent",
+            meta,
+        )
+    if kind is MockEventKind.ASSISTANT_EDIT_DECIDED:
+        decision = str(d.get("decision"))
+        verb, decided_tone = _DECISIONS.get(decision, (decision, "neutral"))
+        title = f"{verb} the AI's edit to {d.get('path')}"
+        if decision != "conflict":
+            title += f" after {_seconds(d.get('reviewMs'))}"
+        meta = {"decision": decision, "reviewMs": d.get("reviewMs")}
+        return _Shown(title, tone=decided_tone, meta=meta)
+    if kind is MockEventKind.INTERVIEWER_MESSAGE:
+        return _Shown("Interviewer", _cut(d.get("text")), meta={"trigger": d.get("trigger")})
+    if kind is MockEventKind.CANDIDATE_MESSAGE:
+        return _Shown("You", _cut(d.get("text")))
+    if kind is MockEventKind.STAGE_UNLOCKED:
+        early = bool(d.get("early"))
+        title = f"Change request arrived (stage {d.get('stage')})"
+        return _Shown(
+            title + (", early at your request" if early else ""), tone="warn", meta={"early": early}
+        )
+    if kind is MockEventKind.STAGE_PASSED:
+        return _Shown(f"Passed stage {d.get('stage')}", tone="good")
+    if kind is MockEventKind.STAGE_SKIPPED:
+        return _Shown(f"Skipped stage {d.get('stage')}", tone="warn")
+    if kind is MockEventKind.SESSION_STARTED:
+        return _Shown("Round started")
+    return _Shown(
+        "Round ended" + (" (the sandbox was already gone)" if d.get("sandboxLost") else "")
+    )
+
+
+def replay(events: list[MockEvent], start: datetime | None) -> list[ReplayEntry]:
+    """Every event of a live session in order, as the session page shows
+    it: saves with their diffs, test runs, dev-server actions, the AI
+    assistant (prompts by mode, replies, proposed edits with what became of
+    them and the review time), the interviewer chat, and stage changes
+    including the change request's arrival."""
+    decisions: dict[object, MockEvent] = {}
+    for e in events:
+        if e.kind is MockEventKind.ASSISTANT_EDIT_DECIDED:
+            # An accept that conflicted can be retried; the last word counts.
+            decisions[e.data.get("proposalId")] = e
+    entries = []
+    for event in events:
+        group = _GROUPS.get(event.kind)
+        if group is None:
+            continue
+        shown = _shown(event, decisions)
+        t = (event.at - start).total_seconds() if event.at and start else None
+        stage = event.data.get("stage")
+        entries.append(
+            ReplayEntry(
+                at=event.at,
+                t=max(0.0, t) if t is not None else None,
+                group=group,
+                kind=event.kind,
+                title=shown.title,
+                detail=shown.detail,
+                diff=shown.diff,
+                tone=shown.tone,
+                stage=stage if isinstance(stage, int) else None,
+                meta=shown.meta,
+            )
+        )
+    return entries

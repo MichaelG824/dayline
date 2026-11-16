@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   GeneratedPreviewStatus,
   GeneratedProject,
+  InterviewerStyle,
   MockGuideline,
   MockRubric,
   cancelGeneratedProject,
@@ -439,6 +440,9 @@ function AttemptLog({ project }: { project: GeneratedProject }) {
   );
 }
 
+// The rubric seeded for analysing these rounds (supabase/migrations/016).
+const FULL_STACK_RUBRIC = 'AI-assisted full-stack round';
+
 // -- ready: look before you start ---------------------------------------------------
 
 function Ready({
@@ -460,6 +464,7 @@ function Ready({
   const [guidelines, setGuidelines] = useState<MockGuideline[]>([]);
   const [rubricId, setRubricId] = useState('');
   const [guidelineId, setGuidelineId] = useState('');
+  const [style, setStyle] = useState<InterviewerStyle>('realistic');
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -467,7 +472,10 @@ function Ready({
     Promise.all([getMockRubrics(), getMockGuidelines()]).then(([rs, gs]) => {
       setRubrics(rs);
       setGuidelines(gs);
-      setRubricId((rs.find((r) => r.roundType === 'AI-assisted project') ?? rs[0])?.id ?? '');
+      // The analysis rubric (migration 016) when it exists, else any AI-assisted one.
+      const preferred =
+        rs.find((r) => r.name === FULL_STACK_RUBRIC) ?? rs.find((r) => r.roundType === 'AI-assisted project');
+      setRubricId((preferred ?? rs[0])?.id ?? '');
       setGuidelineId(gs[0]?.id ?? '');
     }, () => undefined);
   }, []);
@@ -480,6 +488,7 @@ function Ready({
         questionId: null,
         rubricId: rubricId || null,
         guidelineId: guidelineId || null,
+        interviewerStyle: style,
       });
       onStarted(session.id);
     } catch (err) {
@@ -550,13 +559,28 @@ function Ready({
               ))}
             </select>
           </div>
+          <div className="sm:w-44">
+            <Label htmlFor="g-style">Interviewer</Label>
+            <select
+              id="g-style"
+              value={style}
+              onChange={(e) => setStyle(e.target.value as InterviewerStyle)}
+              className={FIELD}
+            >
+              <option value="realistic">Realistic</option>
+              <option value="coach">Coach</option>
+            </select>
+          </div>
           <button onClick={() => void start()} disabled={starting} className={`${PRIMARY_BUTTON} sm:ml-auto whitespace-nowrap`}>
             {starting ? 'Starting the sandbox…' : 'Start round'}
           </button>
         </div>
         <p className="text-xs text-zinc-500">
           Starts a timed AI-assisted session in this project with the coding assistant and the app preview. The
-          clock starts when you do.
+          clock starts when you do.{' '}
+          {style === 'realistic'
+            ? 'A realistic interviewer stays quiet while you code, never says whether you are right, and saves feedback for the end.'
+            : 'A coach probes your code and asks follow-ups whenever you want one.'}
         </p>
         {startError && <ErrorText>{startError}</ErrorText>}
       </div>

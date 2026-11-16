@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   CriterionScore,
-  MockEvent,
   MockSessionDetail,
   Proposal,
   confirmProposals,
@@ -25,6 +24,7 @@ import {
 } from './ui';
 import { DiffView } from './DiffView';
 import { GraderText } from './GraderText';
+import { SessionReplay } from './SessionReplay';
 import { StagedSummary } from './StagedSummary';
 import { TestResults } from './TestResults';
 
@@ -325,88 +325,9 @@ export function SessionView({
   );
 }
 
-const OFF_TIMELINE = new Set<MockEvent['kind']>([
-  'interviewer_message',
-  'candidate_message',
-  'assistant_response',
-  'assistant_edit_proposed',
-]);
-
-// One timeline line: an event, or a run of saves to the same file.
-interface TimelineEntry {
-  event: MockEvent;
-  lastAt: string | null;
-  saves: number;
-}
-
-function eventText({ event, saves }: TimelineEntry): string {
-  const d = event.data;
-  switch (event.kind) {
-    case 'session_started':
-      return 'Started';
-    case 'file_saved':
-      return `Saved ${d.path} (+${d.added ?? 0} −${d.removed ?? 0}${saves > 1 ? `, ${saves} saves` : ''})`;
-    case 'tests_run':
-      return `Ran tests: ${d.passed ?? 0} passed, ${Number(d.failed ?? 0) + Number(d.errors ?? 0)} failing`;
-    case 'command_run':
-      return `$ ${d.command}${d.exitCode ? `  (exit ${d.exitCode})` : ''}`;
-    case 'session_ended':
-      return d.sandboxLost ? 'Ended (the sandbox had already been deleted)' : 'Ended';
-    case 'stage_tests_run':
-      return `Ran stage ${d.stage} tests: ${d.passed ?? 0} passed, ${Number(d.failed ?? 0) + Number(d.errors ?? 0)} failing`;
-    case 'stage_passed':
-      return `Passed stage ${d.stage}`;
-    case 'stage_skipped':
-      return `Skipped stage ${d.stage}`;
-    case 'interviewer_message':
-      return `Interviewer: ${d.text}`;
-    case 'candidate_message':
-      return `You: ${d.text}`;
-    case 'assistant_prompt':
-      return `Asked the AI assistant (${d.mode}): ${d.text}`;
-    case 'assistant_edit_decided':
-      return d.decision === 'accepted'
-        ? `Accepted the AI assistant's edit to ${d.path}`
-        : d.decision === 'rejected'
-          ? `Rejected the AI assistant's edit to ${d.path}`
-          : `Tried to accept the AI assistant's edit to ${d.path}, but the file had changed`;
-    case 'assistant_response':
-    case 'assistant_edit_proposed':
-      return '';
-  }
-}
-
-// Back-to-back saves of one file read as one line with its time span, like
-// the grader sees them (mock/worklog.py).
-function timelineEntries(events: MockEvent[]): TimelineEntry[] {
-  const out: TimelineEntry[] = [];
-  for (const event of events) {
-    const last = out[out.length - 1];
-    if (last && last.event.kind === 'file_saved' && event.kind === 'file_saved' && last.event.data.path === event.data.path) {
-      last.event = {
-        ...last.event,
-        data: {
-          ...last.event.data,
-          added: Number(last.event.data.added ?? 0) + Number(event.data.added ?? 0),
-          removed: Number(last.event.data.removed ?? 0) + Number(event.data.removed ?? 0),
-        },
-      };
-      last.lastAt = event.at;
-      last.saves += 1;
-    } else {
-      out.push({ event, lastAt: event.at, saves: 1 });
-    }
-  }
-  return out;
-}
-
-// What a live session left behind: the last test run, the timeline, and the diff.
+// What a live session left behind: the last test run, the replay of the
+// whole round, and the diff.
 function WorkRecord({ session }: { session: MockSessionDetail }) {
-  const start = session.startedAt ? Date.parse(session.startedAt) : null;
-  // The interviewer chat is in the transcript, not the timeline; the
-  // assistant's replies and drafts are summed up by its prompts and decisions.
-  const entries = timelineEntries((session.events ?? []).filter((e) => !OFF_TIMELINE.has(e.kind)));
-  const clock = (at: string | null) => (start && at ? formatClock((Date.parse(at) - start) / 1000) : '');
   const diff = session.finalDiff ?? '';
   return (
     <>
@@ -422,24 +343,8 @@ function WorkRecord({ session }: { session: MockSessionDetail }) {
       </section>
 
       <section>
-        <p className={SECTION_TITLE}>TIMELINE</p>
-        <ol className={`${CARD} px-4 py-3 grid grid-cols-[auto_1fr] gap-x-5 gap-y-1`}>
-          {entries.map((entry, i) => (
-            <li key={i} className="contents text-sm">
-              <span className="font-mono text-xs leading-5 text-zinc-400 tabular-nums whitespace-nowrap">
-                {clock(entry.event.at)}
-                {entry.saves > 1 && `–${clock(entry.lastAt)}`}
-              </span>
-              <span
-                className={`min-w-0 break-words text-zinc-700 dark:text-zinc-300 ${
-                  entry.event.kind === 'command_run' ? 'font-mono text-xs leading-5' : ''
-                }`}
-              >
-                {eventText(entry)}
-              </span>
-            </li>
-          ))}
-        </ol>
+        <p className={SECTION_TITLE}>REPLAY</p>
+        <SessionReplay sessionId={session.id} />
       </section>
 
       <section>

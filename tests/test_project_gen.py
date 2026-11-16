@@ -6,6 +6,7 @@ problem a validated project becomes."""
 from __future__ import annotations
 
 import copy
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -491,20 +492,26 @@ def test_a_validated_project_becomes_a_two_stage_ai_assisted_problem() -> None:
     assert problem.overview_md == next_nest_tags.README
     assert problem.stages[0].test_names == {n for _, n in result.cases[0]}
 
-    # A round: stage 1's tests gate stage 1; then both stages' tests run.
+    # A round: stage 1's tests gate stage 1; the change request is timed, so
+    # it waits for its minute; then both stages' tests run.
+    assert problem.timed and problem.stages[1].timed and not problem.stages[0].timed
     sandbox = RuleSandbox()
     sandbox.create("s", "next-nest", artifact.files)
     attempts = [StageAttempt(status=StageStatus.ACTIVE), StageAttempt()]
     assert set(staged.hidden_files(problem, attempts)) == {"stage1-tags.test.ts"}
     run = sandbox.run_hidden_tests("s", staged.hidden_files(problem, attempts))
-    assert staged.record_run(problem, attempts, run) is False
+    assert staged.record_run(problem, attempts, run) == []
     sandbox.write_file("s", SERVICE, next_nest_tags.SERVICE_TAGS, None)
     run = sandbox.run_hidden_tests("s", staged.hidden_files(problem, attempts))
-    assert staged.record_run(problem, attempts, run) is True
-    staged.finish_stage(attempts, StageStatus.PASSED, {}, attempts[0].started_at or _now())
+    assert staged.record_run(problem, attempts, run) == [0]
+    now = _now()
+    staged.finish_stage(problem, attempts, 0, StageStatus.PASSED, {}, now)
+    assert attempts[1].status is StageStatus.LOCKED
+    assert staged.unlock_due(problem, attempts, now, now) == []
+    assert staged.unlock_due(problem, attempts, now - timedelta(minutes=25), now) == [1]
     assert len(staged.hidden_files(problem, attempts)) == 2
     run = sandbox.run_hidden_tests("s", staged.hidden_files(problem, attempts))
-    assert staged.record_run(problem, attempts, run) is False
+    assert staged.record_run(problem, attempts, run) == []
     assert set(attempts[1].first_outcomes) == problem.stages[1].test_names
 
 

@@ -243,8 +243,15 @@ def test_preview_then_start_a_round_in_the_project(
     ctx.sandbox.write_file(sid, SERVICE, next_nest_tags.SERVICE_TAGS, None)
     run = client.post(f"/api/mock/sessions/{sid}/stage/tests").json()
     assert run["passed"] is True
-    assert [s["status"] for s in run["staged"]["stages"]] == ["passed", "active"]
-    assert run["staged"]["stages"][1]["promptMd"].startswith("Product wants")
+    # The change request is timed: passing early keeps the candidate on stage
+    # 1 until its minute, or until they ask for it.
+    assert [s["status"] for s in run["staged"]["stages"]] == ["passed", "locked"]
+    assert run["staged"]["canBringEarly"] is True
+    assert run["staged"]["interviewerStyle"] == "realistic"
+    brought = client.post(f"/api/mock/sessions/{sid}/stage/bring-early").json()
+    assert [s["status"] for s in brought["stages"]] == ["passed", "active"]
+    assert brought["stages"][1]["promptMd"].startswith("Product wants")
+    assert brought["changeRequest"]["early"] is True
 
     # A session uses it now, so it cannot be deleted; ending and deleting
     # the session frees it.

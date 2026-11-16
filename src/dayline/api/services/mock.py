@@ -27,16 +27,18 @@ from dayline.api.serializers import (
     mock_question_json,
     mock_rubric_json,
     mock_session_json,
+    replay_json,
     scorecard_json,
     staged_round_json,
     task_json,
 )
+from dayline.api.services.staged_clock import catch_up
 from dayline.api.services.staged_problems import session_problem
-from dayline.mock import grader_model, mock_model, staged
+from dayline.mock import grader_model, mock_model, round_metrics, staged
 from dayline.mock.grader import GradeInput, GradingError, grade, weak_area_proposals
 from dayline.mock.ingest import ExtractionError, extract_questions, find_similar
 from dayline.mock.templates import builtin_templates
-from dayline.mock.worklog import work_record
+from dayline.mock.worklog import replay, work_record
 from dayline.models import (
     MockGuideline,
     MockQuestion,
@@ -379,6 +381,12 @@ def assistant_enabled(ctx: AppContext, session: MockSession) -> bool:
     )
 
 
+def analysed_round(ctx: AppContext, session: MockSession) -> bool:
+    """Whether grading analyses the round (metrics, key points citing
+    moments): staged AI-assisted rounds, which generated projects are."""
+    return session.staged_problem_id is not None and assistant_enabled(ctx, session)
+
+
 def list_sessions(ctx: AppContext) -> list[dict[str, Any]]:
     cards = ctx.mock_source.latest_scorecards()
     return [mock_session_json(s, cards.get(s.id)) for s in ctx.mock_source.list_sessions()]
@@ -400,9 +408,11 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
         "tasks": [task_json(t, ctx.task_source) for t in linked],
     }
     if session.kind is MockSessionKind.LIVE:
-        events = ctx.mock_source.list_events(session_id)
         template = builtin_templates().get(session.template_id or "")
         problem = session_problem(ctx, session)
+        if problem is not None:
+            catch_up(ctx, session, problem)
+        events = ctx.mock_source.list_events(session_id)
         detail |= {
             "templateTitle": template.title if template else None,
             "taskMd": template.task_md if template else "",
@@ -423,6 +433,28 @@ def get_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
                 "staged": staged_round_json(problem, session, events, datetime.now(UTC)),
             }
     return detail
+
+
+def get_replay(ctx: AppContext, session_id: str) -> dict[str, Any]:
+    """Everything that happened in a live session, in order, for the replay."""
+    session = _get_session(ctx, session_id)
+    if session.kind is not MockSessionKind.LIVE:
+        raise HTTPException(status_code=404, detail="Only live sessions have a replay")
+    problem = session_problem(ctx, session)
+    if problem is not None:
+        catch_up(ctx, session, problem)
+    events = ctx.mock_source.list_events(session_id)
+    now = datetime.now(UTC)
+    data = replay_json(session, replay(events, session.started_at), now)
+    # An AI-assisted round also shows the numbers its analysis is given.
+    data["metrics"] = []
+    if session.started_at is not None and analysed_round(ctx, session):
+        metrics = round_metrics.compute(
+            problem, session.stages, events, session.started_at, session.ended_at or now
+        )
+        lines = round_metrics.metrics_text(metrics).splitlines()[1:]
+        data["metrics"] = [line.removeprefix("- ") for line in lines]
+    return data
 
 
 def check_session_refs(
@@ -490,17 +522,25 @@ def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
             question = None
 
     events = ctx.mock_source.list_events(session_id)
-    work = work_record(session, events)
     problem = session_problem(ctx, session)
-    if problem is not None:
-        now = session.ended_at or datetime.now(UTC)
-        work = f"{staged.round_record(problem, session.stages, now)}\n\n{work}"
+    now = session.ended_at or datetime.now(UTC)
+    # A staged AI-assisted round (a generated one) is analysed: metrics
+    # computed in code, key points that cite moments.
+    analysed = analysed_round(ctx, session)
+    if analysed:
+        work = round_metrics.analysis_record(problem, session, events, now)
+    else:
+        work = work_record(session, events)
+        if problem is not None:
+            work = f"{staged.round_record(problem, session.stages, now)}\n\n{work}"
     data = GradeInput(
         transcript=session.transcript,
         rubric=rubric,
         guideline=guideline,
         question=question,
         work=work,
+        hints=problem.analysis_hints if problem else (),
+        key_points=analysed,
     )
     try:
         card = grade(ctx.anthropic_client, grader_model(), data, session.id)

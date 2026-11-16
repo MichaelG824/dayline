@@ -56,7 +56,7 @@ from dayline.mock.project_spec import (
     parse_request,
 )
 from dayline.mock.templates import builtin_templates
-from dayline.models import GeneratedProject, GenerationStatus
+from dayline.models import GeneratedProject, GenerationStatus, InterviewerStyle
 
 log = logging.getLogger(__name__)
 
@@ -489,10 +489,11 @@ def start_round(
     question_id: str | None,
     rubric_id: str | None,
     guideline_id: str | None,
+    style: InterviewerStyle = InterviewerStyle.REALISTIC,
 ) -> str:
     """Start a staged, AI-assisted live round in the project; returns the
     session id. The preview sandbox goes first (the runner caps how many
     run at once)."""
     _ready(ctx, owner, project_id)
     _destroy_preview(ctx, project_id)
-    return mock_staged.start_round(ctx, project_id, question_id, rubric_id, guideline_id)
+    return mock_staged.start_round(ctx, project_id, question_id, rubric_id, guideline_id, style)

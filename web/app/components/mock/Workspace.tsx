@@ -14,6 +14,7 @@ import {
   StagedRound,
   TestReport,
   WorkspaceFile,
+  bringChangeRequestEarly,
   endLiveSession,
   getMockSession,
   getPreviewStatus,
@@ -58,6 +59,10 @@ const Terminal = dynamic(() => import('./Terminal').then((m) => m.Terminal), { s
 const AUTOSAVE_MS = 1000;
 const FILE_POLL_MS = 3000;
 const SANDBOX_POLL_MS = 20_000;
+// How often a realistic interviewer may check in (the server decides whether it speaks).
+const CHECK_IN_MS = 60_000;
+// While the change request is due but not yet in, ask the server this often.
+const DUE_RETRY_MS = 5000;
 
 interface OpenFile {
   path: string;
@@ -131,6 +136,10 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
   // What to resend when "Try again" is clicked after a failed interviewer turn.
   const lastTurn = useRef<{ trigger: InterviewerTrigger; message?: string } | null>(null);
   const [skipping, setSkipping] = useState<'idle' | 'confirm' | 'skipping'>('idle');
+  const [bringing, setBringing] = useState(false);
+  // The server's clock minus ours: a timed change request counts down by the
+  // server's time even when this machine's clock is off.
+  const [skewMs, setSkewMs] = useState(0);
   const [ending, setEnding] = useState<'idle' | 'confirm' | 'ending'>('idle');
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -422,6 +431,51 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
     void askInterviewer('stage_start');
   }, [staged, session?.status, sandboxRunning, askInterviewer]);
 
+  // A realistic interviewer may check in when the candidate looks stuck
+  // (failing runs, a long silence). The server decides, and stays quiet
+  // otherwise without a model call; nothing shows unless it speaks.
+  const thinkingRef = useRef(false);
+  useEffect(() => {
+    thinkingRef.current = thinking;
+  }, [thinking]);
+  const realistic = staged?.interviewerStyle === 'realistic';
+  const checkIn = useCallback(async () => {
+    if (thinkingRef.current || document.visibilityState !== 'visible') return;
+    try {
+      const fresh = await interviewerTurn(sessionId, 'check_in');
+      if (!thinkingRef.current) setStaged(fresh);
+    } catch {
+      // A check-in is optional; the next one will try again.
+    }
+  }, [sessionId]);
+  useEffect(() => {
+    if (!realistic || session?.status !== 'live' || !sandboxRunning) return;
+    const timer = setInterval(() => void checkIn(), CHECK_IN_MS);
+    return () => clearInterval(timer);
+  }, [realistic, session?.status, sandboxRunning, checkIn]);
+
+  // The change request arrives by the server's clock. When the countdown
+  // runs out, ask the server, which unlocks it (stamped with its minute) on
+  // any read; the stage_start effect above then has the interviewer bring it.
+  useEffect(() => {
+    if (staged?.serverNow) setSkewMs(Date.parse(staged.serverNow) - Date.now());
+  }, [staged?.serverNow]);
+  const dueAt = staged?.changeRequest?.dueAt ?? null;
+  const changeRequestIn = dueAt ? (Date.parse(dueAt) - (now + skewMs)) / 1000 : null;
+  const askedAt = useRef(0);
+  useEffect(() => {
+    if (changeRequestIn == null || changeRequestIn > 0 || session?.status !== 'live') return;
+    // At most every few seconds, in case the server's clock is not there yet.
+    if (Date.now() - askedAt.current < DUE_RETRY_MS) return;
+    askedAt.current = Date.now();
+    getMockSession(sessionId).then(
+      (detail) => {
+        if (detail.staged && !thinkingRef.current) setStaged(detail.staged);
+      },
+      () => undefined,
+    );
+  }, [changeRequestIn, session?.status, sessionId]);
+
   async function handleRunStageTests() {
     setPanel('tests');
     setRunning(true);
@@ -431,6 +485,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
       const run = await runStageTests(sessionId);
       setReport(run.report);
       setStaged(run.staged);
+      if (!run.passed && run.staged.interviewerStyle === 'realistic') void checkIn();
     } catch (err) {
       setError(errorMessage(err, 'Could not run the tests.'));
       if (err instanceof ApiError && err.status === 409) void refreshSandbox();
@@ -454,6 +509,19 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
       setError(errorMessage(err, 'Could not skip the stage.'));
     } finally {
       setSkipping('idle');
+    }
+  }
+
+  async function handleBringEarly() {
+    setBringing(true);
+    setError(null);
+    try {
+      await save();
+      setStaged(await bringChangeRequestEarly(sessionId));
+    } catch (err) {
+      setError(errorMessage(err, 'Could not bring in the change request.'));
+    } finally {
+      setBringing(false);
     }
   }
 
@@ -831,6 +899,8 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
             <StagePanel
               staged={staged}
               now={now}
+              changeRequestIn={changeRequestIn}
+              bringing={bringing}
               thinking={thinking}
               chatError={chatError}
               skipping={skipping}
@@ -842,6 +912,7 @@ export function Workspace({ sessionId, onExit, onEnded }: Props) {
                 void askInterviewer(turn.trigger, turn.message);
               }}
               onSkip={() => void handleSkip()}
+              onBringEarly={() => void handleBringEarly()}
               onFinish={() => void handleFinish()}
               onClose={() => setShowTask(false)}
             />

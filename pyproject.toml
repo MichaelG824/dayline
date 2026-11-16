@@ -73,6 +73,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # Fixture projects: other languages' source, kept as written.
 "tests/generated_projects/*" = ["E501"]
+# A recorded round: one event per line reads like the session it came from.
+"tests/round_fixture.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -48,7 +48,7 @@ def _run_stage_4(manager: SandboxManager, sandbox_id: str, code: str) -> bool:
     attempts = [StageAttempt(status=StageStatus.PASSED) for _ in range(3)]
     attempts.append(StageAttempt(status=StageStatus.ACTIVE))
     report = manager.run_hidden_tests(sandbox_id, staged.hidden_files(LRU, attempts)).to_json()
-    return staged.record_run(LRU, attempts, report)
+    return staged.record_run(LRU, attempts, report) == [3]
 
 
 def test_stage_4_passes_the_reference_and_catches_a_missing_lock(

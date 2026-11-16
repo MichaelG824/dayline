@@ -84,7 +84,7 @@ def test_the_reference_passes_its_stage_and_every_earlier_one(
     report = _run(lru, lru.references[stage], stage)
     assert report["status"] == "passed", report["output"]
     attempts = _attempts(lru, stage)
-    assert staged.record_run(lru, attempts, report) is True
+    assert staged.record_run(lru, attempts, report) == [stage - 1]
     # Every stage's every test actually ran.
     ran = {(c["classname"], c["name"].split("[")[0]) for c in report["cases"]}
     for s in lru.stages[:stage]:
@@ -197,7 +197,7 @@ def test_a_classic_mistake_fails_exactly_its_tests(lru: StagedProblem, mistake: 
     stage, make, expected = MISTAKES[mistake]
     report = _run(lru, make(lru.references[stage]), stage)
     assert _failing(lru, report) == {stage: expected}
-    assert staged.record_run(lru, _attempts(lru, stage), report) is False
+    assert staged.record_run(lru, _attempts(lru, stage), report) == []
 
 
 NO_LOCK = "the stage 3 reference: correct, but with no lock at all"
@@ -315,10 +315,10 @@ def test_scores_from_real_runs(lru: StagedProblem) -> None:
     attempts[0].status, attempts[0].code = StageStatus.PASSED, {SOLUTION: lru.references[1]}
     attempts[1] = StageAttempt(status=StageStatus.ACTIVE, started_at=t0)
     buggy = MISTAKES["returns_expired_entries_still_in_the_map"][1](lru.references[2])
-    assert staged.record_run(lru, attempts, _run(lru, buggy, 2)) is False
-    assert staged.record_run(lru, attempts, _run(lru, lru.references[2], 2)) is True
+    assert staged.record_run(lru, attempts, _run(lru, buggy, 2)) == []
+    assert staged.record_run(lru, attempts, _run(lru, lru.references[2], 2)) == [1]
     staged.finish_stage(
-        attempts, StageStatus.PASSED, {SOLUTION: lru.references[2]}, t0.replace(minute=12)
+        lru, attempts, 1, StageStatus.PASSED, {SOLUTION: lru.references[2]}, t0.replace(minute=12)
     )
     result = staged.score_round(lru, attempts, t0.replace(minute=30))[1]
     assert result.runs == 2 and result.time_spent_s == 12 * 60

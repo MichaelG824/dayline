@@ -31,10 +31,11 @@ from dayline.adapters.sandbox import (
 )
 from dayline.api.context import AppContext
 from dayline.api.services.mock import _get_session, check_session_refs
+from dayline.api.services.staged_clock import catch_up
 from dayline.api.services.staged_problems import session_problem
 from dayline.mock import staged
 from dayline.mock.templates import builtin_templates
-from dayline.mock.worklog import chat_transcript, line_changes, repo_diff
+from dayline.mock.worklog import chat_transcript, line_changes, repo_diff, save_diff
 from dayline.models import (
     MockEvent,
     MockEventKind,
@@ -247,7 +248,15 @@ def write_file(
         result = sandbox.write_file(session_id, path, content, base_version)
     added, removed = line_changes(before, content)
     if added or removed or before is None:
-        event(ctx, session_id, MockEventKind.FILE_SAVED, path=path, added=added, removed=removed)
+        event(
+            ctx,
+            session_id,
+            MockEventKind.FILE_SAVED,
+            path=path,
+            added=added,
+            removed=removed,
+            diff=save_diff(path, before, content),
+        )
     return result
 
 
@@ -300,11 +309,14 @@ def end_session(ctx: AppContext, session_id: str) -> None:
 
     start = starting_files(ctx, session)
     now = datetime.now(UTC)
+    problem = session_problem(ctx, session)
+    if problem is not None:
+        # A change request that came due while nobody was looking still came.
+        catch_up(ctx, session, problem, now)
     session.final_files = files
     session.final_diff = "" if lost or start is None else repo_diff(start, files)
     session.status = MockSessionStatus.ENDED
     session.ended_at = now
-    problem = session_problem(ctx, session)
     if problem is not None:
         staged.close_round(session.stages, staged.solution_files(problem, files), now)
         # The interviewer chat is the round's transcript, for grading.

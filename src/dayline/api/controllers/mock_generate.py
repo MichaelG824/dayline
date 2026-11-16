@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from dayline.api.context import ContextDep
 from dayline.api.services import mock as mock_service
 from dayline.api.services import mock_generate as service
+from dayline.models import InterviewerStyle
 
 router = APIRouter()
 BASE = "/api/mock/generated"
@@ -54,6 +55,8 @@ class StartRequest(BaseModel):
     questionId: str | None = None  # noqa: N815
     rubricId: str | None = None  # noqa: N815
     guidelineId: str | None = None  # noqa: N815
+    # Realistic unless the candidate picks the coach.
+    interviewerStyle: InterviewerStyle = InterviewerStyle.REALISTIC  # noqa: N815
 
 
 @router.get(BASE)
@@ -142,6 +145,12 @@ def start_round(
 ) -> dict[str, Any]:
     """Start an AI-assisted staged round in the project; returns the session."""
     session_id = service.start_round(
-        ctx, owner, project_id, body.questionId, body.rubricId, body.guidelineId
+        ctx,
+        owner,
+        project_id,
+        body.questionId,
+        body.rubricId,
+        body.guidelineId,
+        body.interviewerStyle,
     )
     return mock_service.get_session(ctx, session_id)

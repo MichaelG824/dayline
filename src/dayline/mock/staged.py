@@ -24,6 +24,15 @@ the stack's test language, so which JUnit cases belong to which stage cannot
 be read off the source; validation records them (``Stage.cases``) from real
 runs instead.
 
+Generated stages after the first are *timed* (``Stage.unlock_min``): the
+change request arrives at its minute whether or not stage 1 has passed, the
+way a real interviewer interrupts you. Passing stage 1 early keeps the
+candidate on it (polishing) until then, unless they ask for the change
+request early (:func:`bring_early`); and a stage 1 that has not passed stays
+active after the change request arrives, so its hidden tests keep counting.
+Built-in problems have no timed stages and unlock each stage when the one
+before it passes.
+
 Everything below the loader is pure: which hidden tests a run includes, how a
 run moves the round on, and the per-stage scores.
 """
@@ -34,7 +43,7 @@ import difflib
 import re
 import tomllib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal
@@ -80,9 +89,14 @@ class Stage:
     # stages, whose cases are matched by module name instead.
     cases: frozenset[tuple[str, str]] = frozenset()
     # Generated problems: when the stage unlocks, in minutes into the round
-    # (the change request's time; stage 1 starts at 0). Unused until timed
-    # unlocks exist.
+    # (the change request's time; stage 1 starts at 0).
     unlock_min: int | None = None
+
+    @property
+    def timed(self) -> bool:
+        """Whether the stage arrives at a set minute rather than when the
+        stage before it passes."""
+        return self.number > 1 and self.unlock_min is not None
 
     @property
     def test_module(self) -> str:
@@ -129,6 +143,10 @@ class StagedProblem:
     @property
     def overview_md(self) -> str:
         return self.starter.get(OVERVIEW_FILE, "")
+
+    @property
+    def timed(self) -> bool:
+        return any(stage.timed for stage in self.stages)
 
 
 # --------------------------------------------------------------------------- #
@@ -230,12 +248,79 @@ def new_round(problem: StagedProblem, now: datetime) -> list[StageAttempt]:
 
 
 def active_index(stages: list[StageAttempt]) -> int | None:
-    """The 0-based index of the active stage; ``None`` once every stage is done."""
-    return next((i for i, s in enumerate(stages) if s.status is StageStatus.ACTIVE), None)
+    """The 0-based index of the latest active stage; ``None`` when none is
+    active. A pass-to-unlock round has at most one; in a timed round a stage
+    that had not passed when the next one arrived stays active behind it."""
+    active = [i for i, s in enumerate(stages) if s.status is StageStatus.ACTIVE]
+    return active[-1] if active else None
+
+
+def focus_index(stages: list[StageAttempt]) -> int | None:
+    """The stage the candidate is working in: the latest active one, else the
+    latest unlocked while a stage is still to come; ``None`` once every stage
+    is done. In a pass-to-unlock round that is the active stage. In a timed
+    round it can be a passed stage being polished while the next one's time
+    has not come yet, or stage 1 again after the change request is skipped."""
+    ended = any(s.status is StageStatus.FAILED for s in stages)  # close_round ran
+    if ended or not any(s.status in (StageStatus.ACTIVE, StageStatus.LOCKED) for s in stages):
+        return None
+    active = active_index(stages)
+    if active is not None:
+        return active
+    unlocked = [i for i, s in enumerate(stages) if s.status is not StageStatus.LOCKED]
+    return unlocked[-1] if unlocked else None
+
+
+def next_unlock(
+    problem: StagedProblem, stages: list[StageAttempt], round_start: datetime
+) -> tuple[int, datetime] | None:
+    """The next locked stage and when it arrives, if it is timed."""
+    for i, (stage, attempt) in enumerate(zip(problem.stages, stages, strict=True)):
+        if attempt.status is StageStatus.LOCKED:
+            if not stage.timed or stage.unlock_min is None:
+                return None
+            return i, round_start + timedelta(minutes=stage.unlock_min)
+    return None
+
+
+def _unlock(stages: list[StageAttempt], index: int, at: datetime) -> None:
+    stages[index].status = StageStatus.ACTIVE
+    stages[index].started_at = at
+
+
+def unlock_due(
+    problem: StagedProblem, stages: list[StageAttempt], round_start: datetime, now: datetime
+) -> list[int]:
+    """Unlock every timed stage whose minute has come, whatever state the
+    stages before it are in. Each is stamped with its own minute, not
+    ``now``: nobody may have asked until later. Returns the indices unlocked."""
+    unlocked = []
+    while (due := next_unlock(problem, stages, round_start)) is not None and due[1] <= now:
+        _unlock(stages, due[0], due[1])
+        unlocked.append(due[0])
+    return unlocked
+
+
+def can_bring_early(problem: StagedProblem, stages: list[StageAttempt]) -> bool:
+    """Whether the candidate may ask for the next timed stage now: nothing
+    is active (every stage so far passed or was skipped) and it is timed."""
+    if active_index(stages) is not None:
+        return False
+    locked = next((i for i, s in enumerate(stages) if s.status is StageStatus.LOCKED), None)
+    return locked is not None and problem.stages[locked].timed
+
+
+def bring_early(problem: StagedProblem, stages: list[StageAttempt], now: datetime) -> int:
+    """ "I'm done early": unlock the next timed stage now; returns its index."""
+    if not can_bring_early(problem, stages):
+        raise ValueError("Nothing to bring early: finish or skip the current stage first")
+    index = next(i for i, s in enumerate(stages) if s.status is StageStatus.LOCKED)
+    _unlock(stages, index, now)
+    return index
 
 
 def hidden_files(problem: StagedProblem, stages: list[StageAttempt]) -> dict[str, str]:
-    """The hidden tests for a run: the active stage's plus every passed
+    """The hidden tests for a run: the active stages' plus every passed
     stage's (so a later stage cannot quietly break an earlier one). Skipped
     stages are left out - their features may never have been written."""
     return {
@@ -270,53 +355,83 @@ def stage_outcomes(
     return outcomes
 
 
+def _all_passed(problem: StagedProblem, stage: Stage, report: dict[str, Any] | None) -> bool:
+    outcomes = stage_outcomes(problem, stage, report)
+    return all(outcomes.get(name) == "passed" for name in stage.test_names)
+
+
 def run_passes(problem: StagedProblem, stage: Stage, report: dict[str, Any]) -> bool:
     """Whether a run passes ``stage``: the whole run passed (earlier stages
     included) and every one of the stage's own tests actually ran and passed."""
     if report.get("status") != "passed":
         return False
-    outcomes = stage_outcomes(problem, stage, report)
-    return all(outcomes.get(name) == "passed" for name in stage.test_names)
+    return _all_passed(problem, stage, report)
+
+
+def _passes_through(
+    problem: StagedProblem, stages: list[StageAttempt], index: int, report: dict[str, Any]
+) -> bool:
+    """A timed round's rule: the run passes stage ``index`` when its own
+    tests and those of every earlier stage it includes passed. A later stage
+    still failing does not hold an earlier one back."""
+    if report.get("status") not in ("passed", "failed"):
+        return False
+    return all(
+        _all_passed(problem, stage, report)
+        for stage, attempt in zip(problem.stages[: index + 1], stages, strict=False)
+        if attempt.status in (StageStatus.ACTIVE, StageStatus.PASSED)
+    )
 
 
 def record_run(
     problem: StagedProblem, stages: list[StageAttempt], report: dict[str, Any]
-) -> bool:
-    """Record a hidden test run on the active stage; returns whether it
-    passed that stage. The caller then finishes the stage (it needs the code)."""
-    index = active_index(stages)
-    if index is None:
+) -> list[int]:
+    """Record a hidden test run on the stages it was for (the focus stage
+    and any other still active); returns the indices of the active stages it
+    passes. The caller then finishes them (it needs the code)."""
+    focus = focus_index(stages)
+    if focus is None:
         raise ValueError("Every stage is already done")
-    attempt, stage = stages[index], problem.stages[index]
-    attempt.runs += 1
-    attempt.report = report
-    if attempt.runs == 1:
-        attempt.first_outcomes = stage_outcomes(problem, stage, report)
-    return run_passes(problem, stage, report)
+    active = [i for i, s in enumerate(stages) if s.status is StageStatus.ACTIVE]
+    for i in sorted({focus, *active}):
+        attempt = stages[i]
+        attempt.runs += 1
+        attempt.report = report
+        if attempt.runs == 1:
+            attempt.first_outcomes = stage_outcomes(problem, problem.stages[i], report)
+    if not problem.timed:
+        return [i for i in active if run_passes(problem, problem.stages[i], report)]
+    return [i for i in active if _passes_through(problem, stages, i, report)]
 
 
 def finish_stage(
-    stages: list[StageAttempt], status: StageStatus, code: dict[str, str], now: datetime
+    problem: StagedProblem,
+    stages: list[StageAttempt],
+    index: int,
+    status: StageStatus,
+    code: dict[str, str],
+    now: datetime,
 ) -> None:
-    """Close the active stage as passed or skipped and unlock the next one."""
+    """Close an active stage as passed or skipped. The next stage unlocks
+    now unless it is timed and this one passed: a timed stage waits for its
+    minute (skipping is moving on, so it brings the next stage at once)."""
     if status not in (StageStatus.PASSED, StageStatus.SKIPPED):
         raise ValueError(f"A stage cannot finish as {status}")
-    index = active_index(stages)
-    if index is None:
-        raise ValueError("Every stage is already done")
     attempt = stages[index]
+    if attempt.status is not StageStatus.ACTIVE:
+        raise ValueError(f"Stage {index + 1} is not active")
     attempt.status, attempt.finished_at, attempt.code = status, now, code
-    if index + 1 < len(stages):
-        stages[index + 1].status = StageStatus.ACTIVE
-        stages[index + 1].started_at = now
+    after = index + 1
+    waits = status is StageStatus.PASSED and after < len(stages) and problem.stages[after].timed
+    if after < len(stages) and stages[after].status is StageStatus.LOCKED and not waits:
+        _unlock(stages, after, now)
 
 
 def close_round(stages: list[StageAttempt], code: dict[str, str], now: datetime) -> None:
     """The round ended: a stage still active did not pass."""
-    index = active_index(stages)
-    if index is not None:
-        attempt = stages[index]
-        attempt.status, attempt.finished_at, attempt.code = StageStatus.FAILED, now, code
+    for attempt in stages:
+        if attempt.status is StageStatus.ACTIVE:
+            attempt.status, attempt.finished_at, attempt.code = StageStatus.FAILED, now, code
 
 
 def solution_files(problem: StagedProblem, files: dict[str, str]) -> dict[str, str]:
@@ -450,8 +565,16 @@ def _minutes(seconds: float) -> str:
 def round_record(problem: StagedProblem, stages: list[StageAttempt], now: datetime) -> str:
     """The staged results as text, for the grader's work record."""
     lines = [f"## Staged round: {problem.title}"]
-    for result in score_round(problem, stages, now):
+    start = stages[0].started_at if stages else None
+    for stage, attempt, result in zip(
+        problem.stages, stages, score_round(problem, stages, now), strict=True
+    ):
         head = f"Stage {result.number} ({result.title}): {result.status.value}"
+        if stage.timed and attempt.started_at is not None and start is not None:
+            arrived = _minutes((attempt.started_at - start).total_seconds())
+            head += (
+                f" (the change request; arrived at {arrived}, scheduled {stage.unlock_min:02d}:00)"
+            )
         if result.time_spent_s is not None:
             head += f" after {_minutes(result.time_spent_s)} (target {result.target_min} min)"
         head += f", {result.runs} hidden test run{'' if result.runs == 1 else 's'}"

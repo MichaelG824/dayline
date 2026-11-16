@@ -895,7 +895,10 @@ export interface MockEvent {
     | 'assistant_prompt'
     | 'assistant_response'
     | 'assistant_edit_proposed'
-    | 'assistant_edit_decided';
+    | 'assistant_edit_decided'
+    | 'stage_unlocked'
+    | 'server_action'
+    | 'preview_reloaded';
   data: Record<string, unknown>;
   at: string | null;
 }
@@ -932,12 +935,33 @@ export interface ChatMessage {
   at: string | null;
 }
 
+export type InterviewerStyle = 'realistic' | 'coach';
+
+// A timed round's change request (generated rounds). Times are the server's.
+export interface ChangeRequestTiming {
+  stage: number;
+  atMin: number;
+  // When it is due; null once it has arrived.
+  dueAt: string | null;
+  arrivedAt: string | null;
+  // The candidate asked for it before its time.
+  early: boolean;
+}
+
 export interface StagedRound {
   problemId: string;
-  // 1-based; null once every stage is done.
+  // The stage the candidate is in (1-based); null once every stage is done.
+  // In a timed round it can be a passed stage being polished until the
+  // change request arrives.
   activeStage: number | null;
   stages: StagedStage[];
   chat: ChatMessage[];
+  interviewerStyle: InterviewerStyle;
+  changeRequest: ChangeRequestTiming | null;
+  // "I'm done early, bring the change request" is on offer.
+  canBringEarly: boolean;
+  // The server's clock when this was read, to count down despite skew.
+  serverNow: string;
 }
 
 export interface StageRun {
@@ -946,7 +970,35 @@ export interface StageRun {
   staged: StagedRound;
 }
 
-export type InterviewerTrigger = 'stage_start' | 'follow_up' | 'message';
+// check_in speaks only when the server finds the candidate clearly stuck.
+export type InterviewerTrigger = 'stage_start' | 'follow_up' | 'message' | 'check_in';
+
+// A live session's replay. Mirrors serializers.replay_json / worklog.replay.
+export type ReplayGroup = 'edits' | 'tests' | 'app' | 'assistant' | 'chat' | 'stages';
+
+export interface ReplayEntry {
+  // Seconds from the start of the round.
+  t: number | null;
+  at: string | null;
+  group: ReplayGroup;
+  kind: MockEvent['kind'];
+  title: string;
+  detail: string;
+  diff: string;
+  tone: 'neutral' | 'good' | 'bad' | 'warn' | 'accent';
+  stage: number | null;
+  meta: Record<string, unknown>;
+}
+
+export interface SessionReplay {
+  startedAt: string | null;
+  endedAt: string | null;
+  durationS: number;
+  changeRequestS: number | null;
+  entries: ReplayEntry[];
+  // AI-assisted rounds: the numbers the analysis is given.
+  metrics: string[];
+}
 
 export interface MockSessionInput {
   title: string;
@@ -1084,6 +1136,17 @@ export async function startStagedRound(input: {
 export async function runStageTests(sessionId: string): Promise<StageRun> {
   const res = await apiFetch(`/api/mock/sessions/${sessionId}/stage/tests`, { method: 'POST' });
   return (await checkOk(res, 'Could not run the tests')).json();
+}
+
+// "I'm done early": bring the timed change request in now.
+export async function bringChangeRequestEarly(sessionId: string): Promise<StagedRound> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/stage/bring-early`, { method: 'POST' });
+  return (await checkOk(res, 'Could not bring the change request')).json();
+}
+
+export async function getSessionReplay(sessionId: string): Promise<SessionReplay> {
+  const res = await apiFetch(`/api/mock/sessions/${sessionId}/replay`);
+  return (await checkOk(res, 'Could not load the replay')).json();
 }
 
 export async function skipStage(sessionId: string): Promise<StagedRound> {
@@ -1409,7 +1472,12 @@ export function generatedPreviewApi(id: string): PreviewApi {
 
 export async function startGeneratedRound(
   id: string,
-  refs: { questionId: string | null; rubricId: string | null; guidelineId: string | null },
+  refs: {
+    questionId: string | null;
+    rubricId: string | null;
+    guidelineId: string | null;
+    interviewerStyle: InterviewerStyle;
+  },
 ): Promise<MockSessionDetail> {
   const res = await apiFetch(`${GENERATED}/${id}/start`, jsonInit('POST', refs));
   return (await checkOk(res, 'Could not start the round')).json();

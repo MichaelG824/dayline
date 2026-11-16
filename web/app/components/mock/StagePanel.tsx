@@ -33,6 +33,10 @@ export const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
 interface Props {
   staged: StagedRound;
   now: number;
+  // Seconds until a timed change request arrives (by the server's clock);
+  // null when none is pending.
+  changeRequestIn: number | null;
+  bringing: boolean;
   // The interviewer is writing a reply.
   thinking: boolean;
   chatError: string | null;
@@ -42,6 +46,7 @@ interface Props {
   onFollowUp: () => void;
   onRetry: () => void;
   onSkip: () => void;
+  onBringEarly: () => void;
   onFinish: () => void;
   onClose: () => void;
 }
@@ -51,6 +56,8 @@ interface Props {
 export function StagePanel({
   staged,
   now,
+  changeRequestIn,
+  bringing,
   thinking,
   chatError,
   skipping,
@@ -59,10 +66,14 @@ export function StagePanel({
   onFollowUp,
   onRetry,
   onSkip,
+  onBringEarly,
   onFinish,
   onClose,
 }: Props) {
   const active = staged.activeStage != null ? staged.stages[staged.activeStage - 1] : null;
+  // A timed round: the stage passed early, and the change request is still to come.
+  const polishing = active?.status === 'passed';
+  const realistic = staged.interviewerStyle === 'realistic';
   const [promptOpen, setPromptOpen] = useState(true);
   // A new stage's prompt always opens.
   useEffect(() => setPromptOpen(true), [staged.activeStage]);
@@ -71,7 +82,7 @@ export function StagePanel({
       <div className="shrink-0 px-4 pt-3 pb-2.5 border-b border-zinc-200 dark:border-zinc-800">
         <div className="flex items-center gap-3 mb-1.5">
           <p className="font-mono text-xs tracking-widest text-zinc-500">STAGES</p>
-          {active && (
+          {active && !polishing && (
             <button
               onClick={onSkip}
               disabled={skipping === 'skipping'}
@@ -87,7 +98,7 @@ export function StagePanel({
           )}
           <button
             onClick={onClose}
-            className={`lg:hidden ${active ? '' : 'ml-auto'} -mr-1 px-1 text-lg leading-none text-zinc-400 hover:text-zinc-900 dark:hover:text-white`}
+            className={`lg:hidden ${active && !polishing ? '' : 'ml-auto'} -mr-1 px-1 text-lg leading-none text-zinc-400 hover:text-zinc-900 dark:hover:text-white`}
             aria-label="Close the stage panel"
           >
             &times;
@@ -95,10 +106,36 @@ export function StagePanel({
         </div>
         <ol className="flex flex-col gap-0.5">
           {staged.stages.map((stage) => (
-            <StageRow key={stage.number} stage={stage} now={now} />
+            <StageRow
+              key={stage.number}
+              stage={stage}
+              now={now}
+              changeRequest={staged.changeRequest?.stage === stage.number}
+              arrivesIn={staged.changeRequest?.stage === stage.number ? changeRequestIn : null}
+            />
           ))}
         </ol>
       </div>
+
+      {polishing && (
+        <div className="shrink-0 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-emerald-50/60 dark:bg-emerald-500/5 flex flex-col gap-2">
+          <p className="text-sm text-zinc-800 dark:text-zinc-200">
+            <span className="font-medium">Stage {active.number} passed.</span>{' '}
+            {changeRequestIn != null && changeRequestIn > 0
+              ? `The change request arrives in ${formatClock(changeRequestIn)}. Keep polishing, or bring it in now.`
+              : 'The change request is on its way.'}
+          </p>
+          {staged.canBringEarly && (
+            <button
+              onClick={onBringEarly}
+              disabled={bringing}
+              className="self-start px-3 py-1.5 text-sm rounded-md border border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-500/10 disabled:opacity-40"
+            >
+              {bringing ? 'Bringing it in…' : "I'm done early - bring the change request"}
+            </button>
+          )}
+        </div>
+      )}
 
       {active ? (
         <div className="shrink-0 max-h-[40%] flex flex-col border-b border-zinc-200 dark:border-zinc-800">
@@ -139,6 +176,7 @@ export function StagePanel({
         thinking={thinking}
         error={chatError}
         canAsk={active != null}
+        followUps={!realistic}
         onSend={onSend}
         onFollowUp={onFollowUp}
         onRetry={onRetry}
@@ -147,7 +185,17 @@ export function StagePanel({
   );
 }
 
-function StageRow({ stage, now }: { stage: StagedStage; now: number }) {
+function StageRow({
+  stage,
+  now,
+  changeRequest,
+  arrivesIn,
+}: {
+  stage: StagedStage;
+  now: number;
+  changeRequest: boolean;
+  arrivesIn: number | null;
+}) {
   const locked = stage.status === 'locked';
   const active = stage.status === 'active';
   const spent =
@@ -177,11 +225,21 @@ function StageRow({ stage, now }: { stage: StagedStage; now: number }) {
         }`}
         title={stage.title ?? undefined}
       >
-        {stage.title ?? `Stage ${stage.number}`}
+        {stage.title ?? (changeRequest ? 'Change request' : `Stage ${stage.number}`)}
         <span className="sr-only"> ({STAGE_STATUS_LABEL[stage.status]})</span>
       </span>
       {locked ? (
-        <LockIcon />
+        <span className="shrink-0 flex items-center gap-1.5">
+          {arrivesIn != null && arrivesIn > 0 && (
+            <span
+              className="font-mono text-xs tabular-nums text-zinc-400 dark:text-zinc-500"
+              title="When the interviewer brings in the change request"
+            >
+              in {formatClock(arrivesIn)}
+            </span>
+          )}
+          <LockIcon />
+        </span>
       ) : (
         spent != null && (
           <span
@@ -219,6 +277,7 @@ function Chat({
   thinking,
   error,
   canAsk,
+  followUps,
   onSend,
   onFollowUp,
   onRetry,
@@ -227,6 +286,8 @@ function Chat({
   thinking: boolean;
   error: string | null;
   canAsk: boolean;
+  // The coach asks follow-ups on request; a realistic interviewer does not.
+  followUps: boolean;
   onSend: (text: string) => void;
   onFollowUp: () => void;
   onRetry: () => void;
@@ -251,7 +312,7 @@ function Chat({
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="flex items-center gap-2 px-4 pt-3 pb-2 shrink-0">
         <p className="font-mono text-xs tracking-widest text-zinc-500">INTERVIEWER</p>
-        {canAsk && (
+        {canAsk && followUps && (
           <button
             onClick={onFollowUp}
             disabled={thinking}

@@ -119,6 +119,9 @@ def test_saves_are_versioned_and_recorded(client: TestClient) -> None:
 
     events = client.get(f"/api/mock/sessions/{sid}").json()["events"]
     saves = [e["data"] for e in events if e["kind"] == "file_saved"]
+    # Each save keeps its own diff, for the replay.
+    assert "+            if loan.book_id == book_id and loan.is_open:" in saves[0].pop("diff")
+    assert saves[1].pop("diff") == ""  # An empty new file has no lines to show.
     assert saves == [
         {"path": SERVICE, "added": 1, "removed": 1},
         {"path": "notes.md", "added": 0, "removed": 0},

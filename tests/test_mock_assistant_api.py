@@ -336,6 +336,7 @@ def test_accepting_writes_exactly_the_proposed_content(
     assert res.status_code == 200 and res.json()["status"] == "accepted"
     assert _files(ctx, session_id)[SERVICE] == ORIGINAL.replace(OLD, NEW)
     (saved,) = _events(ctx, session_id, "file_saved")
+    assert f"+{NEW}" in saved.pop("diff")
     assert saved == {"path": SERVICE, "added": 1, "removed": 1}
     (decided,) = _events(ctx, session_id, "assistant_edit_decided")
     assert decided["decision"] == "accepted" and decided["reviewMs"] >= 0
