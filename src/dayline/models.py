@@ -502,8 +502,8 @@ class MockEventKind(StrEnum):
 @dataclass(slots=True)
 class MockEvent:
     """Something that happened during a live session, e.g. a save
-    (``{"path", "added", "removed"}``) or a test run (``{"status", "passed",
-    "failed", "errors"}``)."""
+    (``{"path", "added", "removed", "diff"}``; older saves have no diff) or
+    a test run (``{"status", "passed", "failed", "errors"}``)."""
 
     session_id: str
     kind: MockEventKind

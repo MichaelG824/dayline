@@ -110,15 +110,19 @@ def test_the_fixture_project_validates_and_its_cases_drive_a_round(
     try:
         attempts = staged.new_round(problem, datetime.now(UTC))
         report = runner.run_hidden_tests(sid, staged.hidden_files(problem, attempts))
-        assert staged.record_run(problem, attempts, report) is False
+        assert staged.record_run(problem, attempts, report) == []
         for path, content in artifact.task.reference.items():
             runner.write_file(sid, path, content, None)
         report = runner.run_hidden_tests(sid, staged.hidden_files(problem, attempts))
-        assert staged.record_run(problem, attempts, report) is True, report["output"]
-        staged.finish_stage(attempts, StageStatus.PASSED, {}, datetime.now(UTC))
-        # Stage 2 runs both stages' tests; only stage 2's are failing.
+        assert staged.record_run(problem, attempts, report) == [0], report["output"]
+        now = datetime.now(UTC)
+        staged.finish_stage(problem, attempts, 0, StageStatus.PASSED, {}, now)
+        # The change request waits for its minute, then runs with both stages'
+        # tests; only stage 2's are failing.
+        assert attempts[1].status is StageStatus.LOCKED
+        staged.bring_early(problem, attempts, now)
         report = runner.run_hidden_tests(sid, staged.hidden_files(problem, attempts))
-        assert staged.record_run(problem, attempts, report) is False
+        assert staged.record_run(problem, attempts, report) == []
         failing = {c["name"] for c in report["cases"] if c["outcome"] != "passed"}
         assert failing and failing <= problem.stages[1].test_names
     finally:

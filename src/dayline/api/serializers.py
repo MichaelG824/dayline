@@ -13,18 +13,27 @@ from typing import Any
 
 from dayline.adapters.application_source import SupabaseApplicationSource
 from dayline.adapters.task_source import SupabaseTaskSource
-from dayline.mock.staged import StagedProblem, active_index, score_round
+from dayline.mock.staged import (
+    StagedProblem,
+    can_bring_early,
+    focus_index,
+    next_unlock,
+    score_round,
+)
+from dayline.mock.worklog import ReplayEntry
 from dayline.models import (
     Application,
     GeneratedProject,
     GenerationStatus,
     Interview,
+    InterviewerStyle,
     MockEvent,
     MockEventKind,
     MockGuideline,
     MockQuestion,
     MockRubric,
     MockSession,
+    MockSessionStatus,
     Plan,
     Problem,
     ProblemTag,
@@ -275,6 +284,39 @@ def mock_event_json(event: MockEvent) -> dict[str, Any]:
     return {"kind": event.kind.value, "data": data, "at": _iso(event.at)}
 
 
+def replay_json(
+    session: MockSession, entries: list[ReplayEntry], now: datetime
+) -> dict[str, Any]:
+    """A live session's replay (``worklog.replay``): every moment with its
+    offset from the start, plus the round's length and when the change
+    request arrived, for the scrubber."""
+    start = session.started_at
+    end = session.ended_at or now
+    arrived = next((e.t for e in entries if e.kind is MockEventKind.STAGE_UNLOCKED), None)
+    last = max((e.t for e in entries if e.t is not None), default=0.0)
+    return {
+        "startedAt": _iso(start),
+        "endedAt": _iso(session.ended_at),
+        "durationS": max(last, (end - start).total_seconds() if start else 0.0),
+        "changeRequestS": arrived,
+        "entries": [
+            {
+                "t": e.t,
+                "at": _iso(e.at),
+                "group": e.group,
+                "kind": e.kind.value,
+                "title": e.title,
+                "detail": e.detail,
+                "diff": e.diff,
+                "tone": e.tone,
+                "stage": e.stage,
+                "meta": e.meta,
+            }
+            for e in entries
+        ],
+    }
+
+
 _CHAT_ROLES = {
     MockEventKind.INTERVIEWER_MESSAGE: "interviewer",
     MockEventKind.CANDIDATE_MESSAGE: "candidate",
@@ -301,8 +343,13 @@ def staged_round_json(
     """The candidate's view of a staged round. Hidden tests and interviewer
     notes never leave the server; a stage never reached shows only its number
     (so the problem can be practised again unspoiled), and a stage's edge
-    cases stay hidden until it is over (their titles give the cases away)."""
-    active = active_index(session.stages)
+    cases stay hidden until it is over (their titles give the cases away).
+
+    ``activeStage`` is the stage the candidate is in (in a timed round it can
+    be a passed stage being polished until the change request arrives).
+    ``changeRequest`` says when a timed stage is due, with the server's
+    clock (``serverNow``) so the client can count down despite clock skew."""
+    active = focus_index(session.stages)
     stages = []
     for stage, attempt, result in zip(
         problem.stages, session.stages, score_round(problem, session.stages, now), strict=True
@@ -337,6 +384,40 @@ def staged_round_json(
         "activeStage": None if active is None else active + 1,
         "stages": stages,
         "chat": chat_json(events),
+        "interviewerStyle": (session.interviewer_style or InterviewerStyle.COACH).value,
+        "changeRequest": _change_request_json(problem, session, events),
+        "canBringEarly": session.status is MockSessionStatus.LIVE
+        and can_bring_early(problem, session.stages),
+        "serverNow": _iso(now),
+    }
+
+
+def _change_request_json(
+    problem: StagedProblem, session: MockSession, events: list[MockEvent]
+) -> dict[str, Any] | None:
+    """A timed round's change request: which stage, its minute, when it is
+    due, and when it arrived (``None`` until it has)."""
+    index = next((i for i, s in enumerate(problem.stages) if s.timed), None)
+    if index is None or session.started_at is None:
+        return None
+    stage = problem.stages[index]
+    attempt = session.stages[index]
+    due = next_unlock(problem, session.stages, session.started_at)
+    unlocked = next(
+        (
+            e
+            for e in events
+            if e.kind is MockEventKind.STAGE_UNLOCKED and e.data.get("stage") == index + 1
+        ),
+        None,
+    )
+    arrived = attempt.status is not StageStatus.LOCKED
+    return {
+        "stage": stage.number,
+        "atMin": stage.unlock_min,
+        "dueAt": _iso(due[1]) if due and due[0] == index else None,
+        "arrivedAt": _iso(attempt.started_at) if arrived else None,
+        "early": bool(unlocked and unlocked.data.get("early")),
     }
 
 

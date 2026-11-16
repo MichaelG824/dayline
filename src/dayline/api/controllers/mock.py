@@ -164,6 +164,12 @@ def get_session(session_id: str, ctx: ContextDep) -> dict[str, Any]:
     return service.get_session(ctx, session_id)
 
 
+@router.get("/api/mock/sessions/{session_id}/replay")
+def get_replay(session_id: str, ctx: ContextDep) -> dict[str, Any]:
+    """A live session's whole round, moment by moment."""
+    return service.get_replay(ctx, session_id)
+
+
 @router.post("/api/mock/sessions", status_code=201)
 def create_session(body: SessionRequest, ctx: ContextDep) -> dict[str, Any]:
     return service.create_session(

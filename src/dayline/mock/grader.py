@@ -14,6 +14,14 @@ model - then decides what to trust:
   UI can flag it; the grader cannot invent evidence silently.
 - The overall score is the weighted mean of criterion scores, computed here.
 
+An AI-assisted round is analysed rather than only scored (``key_points``):
+the work record carries metrics computed in code (``mock/round_metrics.py``)
+and the generator's analysis hints, and the weak areas become 3-5 key points
+to improve, most important first, each citing a moment (``mm:ss``) that code
+checks against the record. A card missing them is sent back like any other
+problem, except on the last attempt, where a scored card is kept rather than
+lost over its citations.
+
 Weak areas become ``propose_new_task`` proposals (see :func:`weak_area_proposals`)
 that go through the existing chat confirm path - grading never creates tasks.
 """
@@ -45,6 +53,8 @@ MAX_TRANSCRIPT_CHARS = 200_000
 # Each attempt is one model call: a prose reply or an invalid card uses one up.
 MAX_ATTEMPTS = 3
 MAX_WEAK_AREAS = 4
+MIN_KEY_POINTS, MAX_KEY_POINTS = 3, 5
+_MOMENT = re.compile(r"\b\d{2}:\d{2}\b")
 MIN_SCORE, MAX_SCORE = 1, 4
 # Weak areas are prep work, so never Errand/Other.
 _PREP_CATEGORY_VALUES = [c.value for c in Category if c.is_prep]
@@ -76,6 +86,22 @@ as a concrete prep task (task_name) with a realistic duration in minutes.
 - Be honest. Do not inflate scores to be encouraging.
 
 Always respond by calling submit_scorecard."""
+
+KEY_POINTS_PROMPT = f"""This is an AI-assisted coding round: judge how the \
+candidate worked with the AI assistant, not just the code it produced. The \
+work record has a timeline (mm:ss from the start), the AI-assistant log, \
+the stage results, and metrics computed in code - use those numbers as \
+given, do not recount events. Interviewer hints for this round tell you \
+what to look for.
+
+Analysis rules (on top of the ones above):
+- Evidence quotes should be concrete moments: copy timeline or AI-log lines \
+with their mm:ss, or exact metric lines.
+- weak_areas are the round's key points to improve: {MIN_KEY_POINTS}-\
+{MAX_KEY_POINTS} of them, ordered by priority (the most important first). \
+Each "why" must cite at least one moment as mm:ss copied from the work \
+record (for example "at 31:20 accepted a 60-line edit after 3s") and say \
+what to do differently."""
 
 SUBMIT_TOOL: dict[str, Any] = {
     "name": "submit_scorecard",
@@ -131,6 +157,10 @@ class GradeInput:
     question: MockQuestion | None = None
     # What the candidate did in a live session (``worklog.work_record``).
     work: str = ""
+    # What the round's generator said to look for (generated rounds).
+    hints: tuple[str, ...] = ()
+    # Analyse an AI-assisted round: 3-5 prioritized key points citing moments.
+    key_points: bool = False
 
 
 _QUOTE_CHARS = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
@@ -182,9 +212,33 @@ def _user_message(data: GradeInput) -> str:
         parts.append(f"## Transcript\n<transcript>\n{data.transcript.strip()}\n</transcript>")
     else:
         parts.append("## Transcript\n(none - this session had no conversation)")
+    if data.hints:
+        hints = "\n".join(f"- {h}" for h in data.hints)
+        parts.append(f"## What to look for in this round (interviewer hints)\n{hints}")
     if data.work.strip():
         parts.append(f"## Work record\n<work>\n{data.work.strip()}\n</work>")
     return "\n\n".join(parts)
+
+
+def key_point_problems(payload: dict[str, Any], data: GradeInput) -> list[str]:
+    """Where an analysis's key points fall short: too few or too many, or a
+    "why" that cites no moment from the record."""
+    points = [w for w in payload.get("weak_areas") or [] if isinstance(w, dict)]
+    problems = []
+    if not MIN_KEY_POINTS <= len(points) <= MAX_KEY_POINTS:
+        problems.append(
+            f"Give {MIN_KEY_POINTS}-{MAX_KEY_POINTS} weak_areas (key points), most important "
+            f"first; got {len(points)}"
+        )
+    record = f"{data.work}\n{data.transcript}"
+    for i, point in enumerate(points, start=1):
+        moments = _MOMENT.findall(str(point.get("why") or ""))
+        if not any(moment in record for moment in moments):
+            problems.append(
+                f"Key point {i} ({point.get('title')!r}): its why must cite a moment as mm:ss "
+                "that appears in the work record"
+            )
+    return problems
 
 
 def _validate(payload: dict[str, Any], rubric: MockRubric) -> list[str]:
@@ -262,7 +316,7 @@ def _build_scorecard(
         strengths=[
             s.strip() for s in payload.get("strengths") or [] if isinstance(s, str) and s.strip()
         ],
-        weak_areas=weak_areas[:MAX_WEAK_AREAS],
+        weak_areas=weak_areas[: MAX_KEY_POINTS if data.key_points else MAX_WEAK_AREAS],
     )
 
 
@@ -280,12 +334,13 @@ def grade(
         raise GradingError(f"Rubric {data.rubric.name!r} has no criteria")
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": _user_message(data)}]
+    system = f"{SYSTEM_PROMPT}\n\n{KEY_POINTS_PROMPT}" if data.key_points else SYSTEM_PROMPT
     problems: list[str] = []
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(MAX_ATTEMPTS):
         response = client.messages.create(
             model=model,
             max_tokens=8192,
-            system=SYSTEM_PROMPT,
+            system=system,
             tools=cast(Any, [SUBMIT_TOOL]),
             messages=cast(Any, messages),
         )
@@ -300,8 +355,10 @@ def grade(
             continue
         payload = dict(tool_use.input or {})
         problems = _validate(payload, data.rubric)
-        if not problems:
+        soft = key_point_problems(payload, data) if data.key_points else []
+        if not problems and (not soft or attempt == MAX_ATTEMPTS - 1):
             return _build_scorecard(payload, data, session_id, model)
+        problems += soft
         # Show the model its own card and exactly what to fix.
         messages.append({"role": "assistant", "content": response.content})
         messages.append(

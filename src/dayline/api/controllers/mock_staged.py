@@ -14,6 +14,7 @@ from dayline.api.context import ContextDep
 from dayline.api.services import mock as mock_service
 from dayline.api.services import mock_staged as service
 from dayline.mock.interviewer import Trigger
+from dayline.models import InterviewerStyle
 
 router = APIRouter()
 
@@ -23,6 +24,8 @@ class StartRequest(BaseModel):
     questionId: str | None = None
     rubricId: str | None = None
     guidelineId: str | None = None
+    # Defaults by problem: realistic for timed (generated) rounds, else coach.
+    interviewerStyle: InterviewerStyle | None = None
 
 
 class InterviewerRequest(BaseModel):
@@ -34,7 +37,12 @@ class InterviewerRequest(BaseModel):
 @router.post("/api/mock/staged/sessions", status_code=201)
 def start_round(body: StartRequest, ctx: ContextDep) -> dict[str, Any]:
     session_id = service.start_round(
-        ctx, body.problemId, body.questionId, body.rubricId, body.guidelineId
+        ctx,
+        body.problemId,
+        body.questionId,
+        body.rubricId,
+        body.guidelineId,
+        body.interviewerStyle,
     )
     return mock_service.get_session(ctx, session_id)
 
@@ -48,6 +56,12 @@ def run_stage_tests(session_id: str, ctx: ContextDep) -> dict[str, Any]:
 @router.post("/api/mock/sessions/{session_id}/stage/skip")
 def skip_stage(session_id: str, ctx: ContextDep) -> dict[str, Any]:
     return service.skip_stage(ctx, session_id)
+
+
+@router.post("/api/mock/sessions/{session_id}/stage/bring-early")
+def bring_early(session_id: str, ctx: ContextDep) -> dict[str, Any]:
+    """"I'm done early": bring the timed change request in now."""
+    return service.bring_early(ctx, session_id)
 
 
 @router.post("/api/mock/sessions/{session_id}/interviewer")
