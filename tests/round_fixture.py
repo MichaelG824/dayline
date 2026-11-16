@@ -10,7 +10,10 @@ Shared by the metrics, replay, and opt-in real-model analysis tests.
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from dayline.mock.staged import Stage, StagedProblem
@@ -18,9 +21,11 @@ from dayline.models import (
     MockEvent,
     MockEventKind,
     MockRoundType,
+    MockRubric,
     MockSession,
     MockSessionKind,
     MockSessionStatus,
+    RubricCriterion,
     StageAttempt,
     StageStatus,
 )
@@ -164,3 +169,26 @@ def recorded_round() -> tuple[StagedProblem, MockSession, list[MockEvent]]:
         transcript="",
     )
     return PROBLEM, session, events
+
+
+MIGRATION = Path(__file__).parent.parent / "supabase/migrations/016_round_analysis.sql"
+
+
+def seeded_rubric() -> MockRubric:
+    """The rubric migration 016 seeds, read from the migration itself."""
+    found = re.search(
+        r"values \(\s*'([^']+)',\s*'([^']+)',\s*'(\[.*?\])'\s*\);",
+        MIGRATION.read_text(),
+        re.DOTALL,
+    )
+    assert found, "016 seeds no rubric"
+    name, round_type, criteria = found.groups()
+    return MockRubric(
+        id="ai-fullstack",
+        name=name,
+        round_type=MockRoundType(round_type),
+        criteria=[
+            RubricCriterion(c["key"], c["title"], c["description"], c["weight"])
+            for c in json.loads(criteria.replace("''", "'"))
+        ],
+    )

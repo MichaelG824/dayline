@@ -275,7 +275,9 @@ _PRAISE = re.compile(
     r"looks good|on the right track)\b",
     re.IGNORECASE,
 )
+# "Whether it's right" / "if it's correct" is the interviewer declining to say.
 _CONFIRMS = re.compile(
+    r"(?<!whether )(?<!if )"
     r"\b(that'?s|this is|it'?s|you'?re|that looks|it looks|your (code|solution|fix) is)"
     r" (right|correct|exactly right|working|bug-free)\b|\b(correct|right)!",
     re.IGNORECASE,

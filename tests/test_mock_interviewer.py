@@ -97,6 +97,10 @@ def test_praise_confirmation_code_and_length_are_flagged_only_for_realistic() ->
     assert speaking_problems(long, REALISTIC) == [
         "Too long: at most 4 short sentences, like speech."
     ]
+    # Declining to say is not confirming.
+    declined = "I'm not going to say whether it's right. How would you check it?"
+    assert speaking_problems(declined, REALISTIC) == []
+    assert speaking_problems("I can't tell you if it's correct.", REALISTIC) == []
     # Plain, short, turned back to them: fine.
     assert speaking_problems("How would you check that? Which test covers it?", REALISTIC) == []
     # "great" inside a word is not praise.
