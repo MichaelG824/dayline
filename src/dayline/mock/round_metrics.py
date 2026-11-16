@@ -14,8 +14,9 @@ import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from dayline.mock.staged import StagedProblem, stage_outcomes
-from dayline.models import MockEvent, MockEventKind, StageAttempt, StageStatus
+from dayline.mock.staged import StagedProblem, round_record, stage_outcomes
+from dayline.mock.worklog import work_record
+from dayline.models import MockEvent, MockEventKind, MockSession, StageAttempt, StageStatus
 
 # An accepted edit reviewed faster than this was most likely not read.
 QUICK_REVIEW_S = 10.0
@@ -311,3 +312,19 @@ def metrics_text(m: RoundMetrics) -> str:
             f"last run: {s.tests_passed}/{s.tests_total} passing; time {spent}."
         )
     return "\n".join(lines)
+
+
+def analysis_record(
+    problem: StagedProblem | None, session: MockSession, events: list[MockEvent], now: datetime
+) -> str:
+    """The work record an AI-assisted round is analysed on: the stage
+    results, these metrics, then the timeline, AI log, tests, and diff."""
+    parts = []
+    if problem is not None:
+        parts.append(round_record(problem, session.stages, now))
+    if session.started_at is not None:
+        parts.append(
+            metrics_text(compute(problem, session.stages, events, session.started_at, now))
+        )
+    parts.append(work_record(session, events))
+    return "\n\n".join(parts)

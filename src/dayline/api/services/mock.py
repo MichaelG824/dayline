@@ -522,17 +522,17 @@ def grade_session(ctx: AppContext, session_id: str) -> dict[str, Any]:
             question = None
 
     events = ctx.mock_source.list_events(session_id)
-    work = work_record(session, events)
     problem = session_problem(ctx, session)
     now = session.ended_at or datetime.now(UTC)
     # A staged AI-assisted round (a generated one) is analysed: metrics
-    # computed here, key points that cite moments.
+    # computed in code, key points that cite moments.
     analysed = analysed_round(ctx, session)
-    if analysed and session.started_at is not None:
-        metrics = round_metrics.compute(problem, session.stages, events, session.started_at, now)
-        work = f"{round_metrics.metrics_text(metrics)}\n\n{work}"
-    if problem is not None:
-        work = f"{staged.round_record(problem, session.stages, now)}\n\n{work}"
+    if analysed:
+        work = round_metrics.analysis_record(problem, session, events, now)
+    else:
+        work = work_record(session, events)
+        if problem is not None:
+            work = f"{staged.round_record(problem, session.stages, now)}\n\n{work}"
     data = GradeInput(
         transcript=session.transcript,
         rubric=rubric,
