@@ -145,3 +145,12 @@ def test_round_record_names_when_the_change_request_arrived() -> None:
     staged.bring_early(PROBLEM, stages, T0 + timedelta(minutes=20, seconds=5))
     record = staged.round_record(PROBLEM, stages, T0 + timedelta(minutes=30))
     assert "(the change request; arrived at 20:05, scheduled 25:00)" in record
+
+
+def test_skipping_the_change_request_returns_the_candidate_to_an_unpassed_stage_1() -> None:
+    stages = staged.new_round(PROBLEM, T0)
+    staged.unlock_due(PROBLEM, stages, T0, CR)
+    staged.finish_stage(PROBLEM, stages, 1, StageStatus.SKIPPED, {}, CR + timedelta(minutes=2))
+    assert _statuses(stages) == [StageStatus.ACTIVE, StageStatus.SKIPPED]
+    assert staged.focus_index(stages) == 0 and staged.active_index(stages) == 0
+    assert list(staged.hidden_files(PROBLEM, stages)) == ["stage1.test.ts"]

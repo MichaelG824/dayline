@@ -256,14 +256,17 @@ def active_index(stages: list[StageAttempt]) -> int | None:
 
 
 def focus_index(stages: list[StageAttempt]) -> int | None:
-    """The stage the candidate is working in: the latest one unlocked, while
-    any stage is still active or to come; ``None`` once every stage is done.
-    In a pass-to-unlock round that is the active stage. In a timed round it
-    can be a passed stage being polished while the next one's time has not
-    come yet."""
+    """The stage the candidate is working in: the latest active one, else the
+    latest unlocked while a stage is still to come; ``None`` once every stage
+    is done. In a pass-to-unlock round that is the active stage. In a timed
+    round it can be a passed stage being polished while the next one's time
+    has not come yet, or stage 1 again after the change request is skipped."""
     ended = any(s.status is StageStatus.FAILED for s in stages)  # close_round ran
     if ended or not any(s.status in (StageStatus.ACTIVE, StageStatus.LOCKED) for s in stages):
         return None
+    active = active_index(stages)
+    if active is not None:
+        return active
     unlocked = [i for i, s in enumerate(stages) if s.status is not StageStatus.LOCKED]
     return unlocked[-1] if unlocked else None
 
