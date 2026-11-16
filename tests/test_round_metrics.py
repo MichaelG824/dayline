@@ -68,6 +68,8 @@ def test_metrics_text_is_citable() -> None:
     assert "Accepted edits reviewed under 10s: 2/3 (67%)" in text
     assert "Change request: arrived at 25:00 (on schedule); first action 1m 40s later" in text
     assert "longest stretch without activity 16m 40s from 10:00" in text
+    assert "first AI prompt after it in edit mode; 1 question to the interviewer" in text
+    assert "1 visible test run, 3 hidden test runs, 1 preview reload; 1 test run after" in text
     assert "- Stage 2 (Filter by tag) final: passed; its hidden tests in the last run: 2/2" in text
 
 

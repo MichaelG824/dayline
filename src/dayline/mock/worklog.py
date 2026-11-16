@@ -407,17 +407,11 @@ def _shown(event: MockEvent, decisions: dict[object, MockEvent]) -> _Shown:
         return _Shown(f"Reloaded the {d.get('server')} preview")
     if kind is MockEventKind.ASSISTANT_PROMPT:
         mode = d.get("mode")
-        return _Shown(
-            f"Asked the AI ({mode})", _cut(d.get("text")), tone="accent", meta={"mode": mode}
-        )
+        return _Shown("Asked the AI", _cut(d.get("text")), tone="accent", meta={"mode": mode})
     if kind is MockEventKind.ASSISTANT_RESPONSE:
         status = str(d.get("status") or "done")
         done = status == "done"
-        title = (
-            f"AI replied ({d.get('mode')}) in {_seconds(d.get('durationMs'))}"
-            if done
-            else f"AI reply {status} ({d.get('mode')})"
-        )
+        title = f"AI replied in {_seconds(d.get('durationMs'))}" if done else f"AI reply {status}"
         meta = {"mode": d.get("mode"), "tools": len(d.get("tools") or [])}
         return _Shown(title, _cut(d.get("text")), tone="neutral" if done else "warn", meta=meta)
     if kind is MockEventKind.ASSISTANT_EDIT_PROPOSED:

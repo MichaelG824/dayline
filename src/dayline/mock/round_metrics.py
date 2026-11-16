@@ -248,6 +248,11 @@ def _share(part: int, whole: int) -> str:
     return f"{part}/{whole} ({round(100 * part / whole)}%)" if whole else "0/0"
 
 
+def _n(count: int, noun: str) -> str:
+    """``1 test run``, ``2 test runs``: ``noun`` is singular; the plural adds s."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 def _span(seconds: float | None) -> str:
     if seconds is None:
         return "never"
@@ -261,8 +266,8 @@ def metrics_text(m: RoundMetrics) -> str:
     lines = ["## Round metrics (computed in code; cite them, do not recount)"]
     lines.append(
         f"- Orientation: first save at {clock(m.first_save_s)}; before it, "
-        f"{m.prompts_before_first_save} AI prompts and {m.checks_before_first_save} test "
-        "runs or preview reloads."
+        f"{_n(m.prompts_before_first_save, 'AI prompt')} and "
+        f"{_n(m.checks_before_first_save, 'check')} (test runs or preview reloads)."
     )
     lines.append(
         f"- Prompts: {total_prompts} (ask {m.prompts.get('ask', 0)}, plan "
@@ -283,18 +288,31 @@ def metrics_text(m: RoundMetrics) -> str:
         f"next accept: {_share(m.verified_accepts, m.accepted)}."
     )
     lines.append(
-        f"- Verification: {m.test_runs} visible test runs, {m.hidden_runs} hidden test runs, "
-        f"{m.preview_reloads} preview reloads; {m.runs_after_last_save} test runs after the "
-        "last save."
+        f"- Verification: {_n(m.test_runs, 'visible test run')}, "
+        f"{_n(m.hidden_runs, 'hidden test run')}, {_n(m.preview_reloads, 'preview reload')}; "
+        f"{_n(m.runs_after_last_save, 'test run')} after the last save."
     )
     if m.change_request_s is not None:
         when = "early, at the candidate's request" if m.change_request_early else "on schedule"
+        action = (
+            f"first action {_span(m.first_action_after_cr_s)} later ({m.first_action_after_cr})"
+            if m.first_action_after_cr_s is not None
+            else "no action after it"
+        )
+        save = (
+            f"first save {_span(m.first_save_after_cr_s)} later"
+            if m.first_save_after_cr_s is not None
+            else "no save after it"
+        )
+        prompt = (
+            f"first AI prompt after it in {m.first_prompt_after_cr_mode} mode"
+            if m.first_prompt_after_cr_mode
+            else "no AI prompt after it"
+        )
         lines.append(
-            f"- Change request: arrived at {clock(m.change_request_s)} ({when}); first action "
-            f"{_span(m.first_action_after_cr_s)} later ({m.first_action_after_cr or 'none'}); "
-            f"first save {_span(m.first_save_after_cr_s)} later; first AI prompt after it: "
-            f"{m.first_prompt_after_cr_mode or 'none'} mode; {m.questions_after_cr} questions "
-            "to the interviewer after it."
+            f"- Change request: arrived at {clock(m.change_request_s)} ({when}); {action}; "
+            f"{save}; {prompt}; {_n(m.questions_after_cr, 'question')} to the interviewer "
+            "after it."
         )
     gap = (
         f"longest stretch without activity {_span(m.longest_gap_s)} from "
